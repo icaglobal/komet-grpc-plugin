@@ -23,6 +23,7 @@ import dev.ikm.tinkar.common.service.SearchService;
 import dev.ikm.tinkar.schema.PublicId;
 import dev.ikm.tinkar.service.proto.SearchSortOption;
 import dev.ikm.tinkar.service.proto.TinkarConceptEntityResponse;
+import dev.ikm.tinkar.service.proto.TinkarSemanticInfoResponse;
 import io.grpc.StatusRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -154,6 +155,40 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
                     stamp  -> EntityService.get().putEntity(stamp));
         }
         return EntityService.get().nidForUuids(publicIds.toArray(new UUID[0]));
+    }
+
+    /**
+     * The field values, pattern name, and STAMP info of a single semantic instance — the result
+     * of {@link #semanticInfo}.
+     *
+     * @param patternName the semantic's governing pattern (e.g. "Test Performed Pattern")
+     * @param fields      each field's value, pre-formatted to a readable string by the server
+     */
+    public record SemanticInfo(String patternName, List<String> fields) {}
+
+    /**
+     * Fetches the field values of a single semantic instance from the gRPC service, by the
+     * semantic's own public ID — not the concept it's attached to. Use this (rather than
+     * {@link #searchGrouped}/{@link #loadConceptWithSemantics}) when a UUID identifies a
+     * semantic/pattern instance directly, e.g. a Test Performed record or a comment.
+     *
+     * @param publicId the semantic's public UUID
+     * @return the semantic's pattern name and formatted field values
+     * @throws IllegalStateException if gRPC is not initialized
+     * @throws RuntimeException      if the server reports failure (including "not found")
+     */
+    public SemanticInfo semanticInfo(UUID publicId) {
+        if (!isActive()) {
+            throw new IllegalStateException("GrpcSearchService not initialized");
+        }
+        PublicId protoPublicId = PublicId.newBuilder().addUuids(publicId.toString()).build();
+        TinkarSemanticInfoResponse response = GrpcSearchClient.get().getSemanticInfo(protoPublicId);
+        if (!response.getSuccess()) {
+            throw new RuntimeException("GetSemanticInfo failed: " + response.getErrorMessage());
+        }
+        var semantic = response.getSemantic();
+        return new SemanticInfo(semantic.getPatternName(),
+                semantic.getFieldsList().stream().map(dev.ikm.tinkar.schema.Field::getStringValue).toList());
     }
 
     // --- SearchService contract ---

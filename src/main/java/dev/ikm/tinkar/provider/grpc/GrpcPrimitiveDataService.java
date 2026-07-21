@@ -34,6 +34,8 @@ import dev.ikm.tinkar.entity.PatternEntity;
 import dev.ikm.tinkar.entity.SemanticEntity;
 import dev.ikm.tinkar.entity.StampEntity;
 import dev.ikm.tinkar.entity.transform.TinkarSchemaToEntityTransformer;
+import dev.ikm.tinkar.terms.EntityFacade;
+import dev.ikm.tinkar.terms.TinkarTerm;
 import org.eclipse.collections.api.block.procedure.primitive.IntProcedure;
 import org.eclipse.collections.api.factory.Lists;
 import org.eclipse.collections.api.factory.Maps;
@@ -391,10 +393,61 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
         public static final DataServiceProperty SERVICE_URL_PROPERTY =
                 new DataServiceProperty("Service URL", false, true);
 
+        /**
+         * The well-known concepts every {@code Coordinates.*} default factory (Logic, Language,
+         * Path/Stamp) resolves eagerly via {@code TinkarTerm.X.nid()}. In gRPC mode the local
+         * entity store starts empty, so any of these can be read before its on-demand fetch
+         * completes — prefetching them all once, here, closes that gap for the whole class of
+         * "well-known concept not yet locally resolvable" crashes (e.g. ike-issues#851) rather
+         * than patching each call site as it's discovered.
+         */
+        private static final List<EntityFacade> BOOTSTRAP_CONCEPTS = List.of(
+                TinkarTerm.DEFINITION_DESCRIPTION_TYPE,
+                TinkarTerm.DESCRIPTION_PATTERN,
+                TinkarTerm.DEVELOPMENT_PATH,
+                TinkarTerm.EL_PLUS_PLUS_INFERRED_AXIOMS_PATTERN,
+                TinkarTerm.EL_PLUS_PLUS_PROFILE,
+                TinkarTerm.EL_PLUS_PLUS_STATED_AXIOMS_PATTERN,
+                TinkarTerm.ENGLISH_LANGUAGE,
+                TinkarTerm.FULLY_QUALIFIED_NAME_DESCRIPTION_TYPE,
+                TinkarTerm.GB_DIALECT_PATTERN,
+                TinkarTerm.INFERRED_NAVIGATION_PATTERN,
+                TinkarTerm.LANGUAGE,
+                TinkarTerm.MASTER_PATH,
+                TinkarTerm.NAVIGATION_VERTEX,
+                TinkarTerm.PRIMORDIAL_PATH,
+                TinkarTerm.REGULAR_NAME_DESCRIPTION_TYPE,
+                TinkarTerm.SANDBOX_PATH,
+                TinkarTerm.SNOROCKET_CLASSIFIER,
+                TinkarTerm.SOLOR_CONCEPT_ASSEMBLAGE,
+                TinkarTerm.SOLOR_MODULE,
+                TinkarTerm.SOLOR_OVERLAY_MODULE,
+                TinkarTerm.SPANISH_LANGUAGE,
+                TinkarTerm.STATED_NAVIGATION_PATTERN,
+                TinkarTerm.USER,
+                TinkarTerm.US_DIALECT_PATTERN
+        );
+
         private final Map<DataServiceProperty, String> properties = new LinkedHashMap<>();
 
         public Controller() {
             properties.put(SERVICE_URL_PROPERTY, "localhost:9095");
+        }
+
+        /**
+         * Prefetches {@link #BOOTSTRAP_CONCEPTS} so the handful of well-known concepts backing
+         * the default view coordinate are already resolvable by the time any window, card, or
+         * menu is built. Each concept is fetched independently so one failure (e.g. a dataset
+         * missing an optional concept) doesn't block the rest or fail gRPC-mode startup.
+         */
+        private static void prefetchBootstrapConcepts() {
+            for (EntityFacade concept : BOOTSTRAP_CONCEPTS) {
+                try {
+                    GrpcSearchService.get().loadConceptWithSemantics(concept.publicId().asUuidList().toList());
+                } catch (Exception e) {
+                    LOG.warn("Failed to prefetch bootstrap concept {}: {}", concept, e.getMessage());
+                }
+            }
         }
 
         @Override
@@ -438,6 +491,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
                 }
                 LOG.info("Initializing gRPC connection to {}:{}", host, port);
                 GrpcSearchService.initialize(host, port);
+                prefetchBootstrapConcepts();
             }
         }
 
