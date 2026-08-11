@@ -21,7 +21,9 @@ import dev.ikm.tinkar.service.proto.TinkarConceptEntityResponse;
 import dev.ikm.tinkar.service.proto.TinkarConceptIdRequest;
 import dev.ikm.tinkar.service.proto.TinkarConceptSearchWithSortRequest;
 import dev.ikm.tinkar.service.proto.TinkarConceptSearchWithSortResponse;
+import dev.ikm.tinkar.service.proto.TinkarConceptSemanticsResponse;
 import dev.ikm.tinkar.service.proto.TinkarSearchServiceGrpc;
+import dev.ikm.tinkar.service.proto.TinkarSemanticInfoResponse;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import org.slf4j.Logger;
@@ -107,6 +109,38 @@ public class GrpcSearchClient implements AutoCloseable {
                 .setPublicId(publicId)
                 .build();
         return stub.loadConceptEntityGraph(request);
+    }
+
+    /**
+     * Calls {@code TinkarSearchService.InspectConcept} on the remote service.
+     * Returns every semantic attached to the concept, each with its pattern name and
+     * named field values — the discovery counterpart to {@link #getSemanticInfo}, which
+     * requires a semantic's UUID up front.
+     *
+     * @param publicId the concept's public ID (list of UUIDs)
+     * @return the response listing the concept's semantics, or an error response
+     */
+    public TinkarConceptSemanticsResponse inspectConcept(PublicId publicId) {
+        TinkarConceptIdRequest request = TinkarConceptIdRequest.newBuilder()
+                .setPublicId(publicId)
+                .build();
+        return stub.inspectConcept(request);
+    }
+
+    /**
+     * Calls {@code TinkarSearchService.GetSemanticInfo} on the remote service.
+     * Returns the field values, pattern name, and STAMP info for a single semantic instance,
+     * fetched by the semantic's own public ID — as opposed to {@link #conceptSearchWithSort}
+     * or {@code InspectConcept}, which operate at concept granularity.
+     *
+     * @param publicId the semantic's public ID (list of UUIDs)
+     * @return the response with the semantic's field-level detail, or an error response
+     */
+    public TinkarSemanticInfoResponse getSemanticInfo(PublicId publicId) {
+        TinkarConceptIdRequest request = TinkarConceptIdRequest.newBuilder()
+                .setPublicId(publicId)
+                .build();
+        return stub.getSemanticInfo(request);
     }
 
     /**

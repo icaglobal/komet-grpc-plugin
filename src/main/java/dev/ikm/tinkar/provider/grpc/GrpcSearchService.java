@@ -23,6 +23,9 @@ import dev.ikm.tinkar.common.service.SearchService;
 import dev.ikm.tinkar.schema.PublicId;
 import dev.ikm.tinkar.service.proto.SearchSortOption;
 import dev.ikm.tinkar.service.proto.TinkarConceptEntityResponse;
+import dev.ikm.tinkar.service.proto.TinkarConceptSemanticInfo;
+import dev.ikm.tinkar.service.proto.TinkarConceptSemanticsResponse;
+import dev.ikm.tinkar.service.proto.TinkarSemanticInfoResponse;
 import io.grpc.StatusRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -154,6 +157,98 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
                     stamp  -> EntityService.get().putEntity(stamp));
         }
         return EntityService.get().nidForUuids(publicIds.toArray(new UUID[0]));
+    }
+
+    /**
+     * One semantic field: its name (the field's meaning concept, from the governing pattern's
+     * field definitions) and its formatted value.
+     */
+    public record NamedField(String name, String value) {}
+
+    /**
+     * A single semantic instance — the result of {@link #semanticInfo} and the element type of
+     * {@link #conceptSemantics}.
+     *
+     * @param patternName the semantic's governing pattern (e.g. "Test Performed Pattern")
+     * @param semanticId  the semantic's own UUID, usable with {@link #semanticInfo}
+     * @param fields      the field values, each paired with its field name
+     */
+    public record SemanticInfo(String patternName, String semanticId, List<NamedField> fields) {}
+
+    /**
+     * Fetches the field values of a single semantic instance from the gRPC service, by the
+     * semantic's own public ID — not the concept it's attached to. Use this (rather than
+     * {@link #searchGrouped}/{@link #loadConceptWithSemantics}) when a UUID identifies a
+     * semantic/pattern instance directly, e.g. a Test Performed record or a comment.
+     *
+     * @param publicId the semantic's public UUID
+     * @return the semantic's pattern name and named field values
+     * @throws IllegalStateException if gRPC is not initialized
+     * @throws RuntimeException      if the server reports failure (including "not found")
+     */
+    public SemanticInfo semanticInfo(UUID publicId) {
+        if (!isActive()) {
+            throw new IllegalStateException("GrpcSearchService not initialized");
+        }
+        PublicId protoPublicId = PublicId.newBuilder().addUuids(publicId.toString()).build();
+        TinkarSemanticInfoResponse response = GrpcSearchClient.get().getSemanticInfo(protoPublicId);
+        if (!response.getSuccess()) {
+            throw new RuntimeException("GetSemanticInfo failed: " + response.getErrorMessage());
+        }
+        return toSemanticInfo(response.getSemantic());
+    }
+
+    /**
+     * Lists every semantic attached to a concept, each with its pattern name, own UUID, and
+     * named field values. This is the discovery step {@link #semanticInfo} lacks: it turns a
+     * concept into the set of semantic instances hanging off it, so structured data (Test
+     * Performed records, identifiers, comments, …) is reachable from a concept alone.
+     *
+     * @param conceptId     the concept's public UUID
+     * @param patternFilter optional case-insensitive substring matched against the pattern
+     *                      name; null or blank returns every semantic
+     * @return the concept's semantics, filtered when a pattern filter is given
+     * @throws IllegalStateException if gRPC is not initialized
+     * @throws RuntimeException      if the server reports failure
+     */
+    public List<SemanticInfo> conceptSemantics(UUID conceptId, String patternFilter) {
+        if (!isActive()) {
+            throw new IllegalStateException("GrpcSearchService not initialized");
+        }
+        PublicId protoPublicId = PublicId.newBuilder().addUuids(conceptId.toString()).build();
+        TinkarConceptSemanticsResponse response = GrpcSearchClient.get().inspectConcept(protoPublicId);
+        if (!response.getSuccess()) {
+            throw new RuntimeException("InspectConcept failed: " + response.getErrorMessage());
+        }
+        String filter = (patternFilter == null || patternFilter.isBlank())
+                ? null : patternFilter.trim().toLowerCase();
+        return response.getSemanticsList().stream()
+                .filter(s -> filter == null || s.getPatternName().toLowerCase().contains(filter))
+                .map(GrpcSearchService::toSemanticInfo)
+                .toList();
+    }
+
+    /**
+     * Adapts a proto semantic to {@link SemanticInfo}, preferring the server's named fields and
+     * falling back to positional names when talking to a server that predates them.
+     */
+    private static SemanticInfo toSemanticInfo(TinkarConceptSemanticInfo semantic) {
+        List<NamedField> fields;
+        if (semantic.getNamedFieldsCount() > 0) {
+            fields = semantic.getNamedFieldsList().stream()
+                    .map(f -> new NamedField(f.getName(), f.getValue()))
+                    .toList();
+        } else {
+            List<NamedField> positional = new java.util.ArrayList<>();
+            List<dev.ikm.tinkar.schema.Field> raw = semantic.getFieldsList();
+            for (int i = 0; i < raw.size(); i++) {
+                positional.add(new NamedField("field " + i, raw.get(i).getStringValue()));
+            }
+            fields = List.copyOf(positional);
+        }
+        String semanticId = semantic.getSemanticPublicId().getUuidsCount() > 0
+                ? semantic.getSemanticPublicId().getUuids(0) : "";
+        return new SemanticInfo(semantic.getPatternName(), semanticId, fields);
     }
 
     // --- SearchService contract ---
