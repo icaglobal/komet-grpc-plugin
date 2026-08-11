@@ -87,4 +87,17 @@ module dev.ikm.tinkar.provider.grpc {
     uses NameResolverProvider;
     uses LoadBalancerProvider;
     uses ServerProvider;
+
+    // NOTE: no `provides` clauses for the four SPIs above, and none are possible —
+    // `provides X with Y` requires Y to be compiled into this module, but the
+    // implementations arrive via maven-shade-plugin at PACKAGE time, long after
+    // module-info is compiled. Declaring them fails with "service implementation must
+    // be defined in the same module as the provides directive".
+    //
+    // They resolve anyway: grpc's registries (ManagedChannelRegistry,
+    // NameResolverRegistry, LoadBalancerRegistry) fall back to a hard-coded provider
+    // list via Class.forName when ServiceLoader yields nothing — the mechanism grpc
+    // ships for Android/ProGuard builds. Because the transport and core are shaded
+    // into THIS module, those Class.forName lookups resolve within the same module.
+    // That is why the shade <artifactSet> must keep grpc-netty-shaded and grpc-core.
 }

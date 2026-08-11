@@ -85,15 +85,32 @@
 
     <dependencies>
         <!--
-            grpc-netty-shaded is the transport (Netty + grpc-netty in one jar).
-            Declared 'runtime' so it is on the classpath at runtime but does not
-            cause a module-requires error at compile time for named modules.
+            grpc-netty-shaded is the transport (Netty + grpc-netty in one jar), and
+            grpc-core the implementation behind it.
+
+            'compile' scope, not 'runtime': both are shaded into this jar (see the
+            shade <artifactSet>) and module-info now names their provider classes in
+            `provides` clauses, which the compiler resolves against the COMPILE
+            classpath. Runtime scope hid them from javac and the module-info would not
+            compile. This also matches the scope rule documented for grpc-api/stub/
+            protobuf above — shade's artifact filter follows Maven scope semantics.
         -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-core</artifactId>
+            <version>${grpc.version}</version>
+            <scope>compile</scope>
+            <exclusions>
+                <exclusion><groupId>com.google.protobuf</groupId><artifactId>protobuf-java</artifactId></exclusion>
+                <exclusion><groupId>com.google.code.findbugs</groupId><artifactId>jsr305</artifactId></exclusion>
+                <exclusion><groupId>javax.annotation</groupId><artifactId>javax.annotation-api</artifactId></exclusion>
+            </exclusions>
+        </dependency>
         <dependency>
             <groupId>io.grpc</groupId>
             <artifactId>grpc-netty-shaded</artifactId>
             <version>${grpc.version}</version>
-            <scope>runtime</scope>
+            <scope>compile</scope>
             <exclusions>
                 <exclusion><groupId>com.google.protobuf</groupId><artifactId>protobuf-java</artifactId></exclusion>
                 <exclusion><groupId>com.google.code.findbugs</groupId><artifactId>jsr305</artifactId></exclusion>
@@ -339,6 +356,33 @@
                                     <include>io.grpc:grpc-protobuf-lite</include>
                                     <include>com.google.guava:guava</include>
                                     <include>com.google.guava:failureaccess</include>
+                                    <!--
+                                        The gRPC RUNTIME half: a channel transport plus the core
+                                        implementation. Without these the jar carries grpc-api's
+                                        `uses io.grpc.ManagedChannelProvider` but nothing that
+                                        PROVIDES one, and the plugin dies at startup with
+                                        "No functional channel service provider found".
+
+                                        These used to arrive on the boot modulepath via
+                                        komet/application's dependency on this jar. komet-desktop
+                                        now stages this plugin as a SINGLE jar into the runtime
+                                        plugins/ layer, and transitive runtime dependencies are not
+                                        staged alongside it — so the transport must live inside.
+
+                                        grpc-netty-shaded holds only io/grpc/netty/**, so it does
+                                        not split-package with grpc-api's io.grpc.*; grpc-core owns
+                                        io.grpc.internal.** and supplies the default load-balancer
+                                        and DNS name-resolver. ServicesResourceTransformer merges
+                                        their META-INF/services entries, and module-info declares
+                                        the matching `provides` — a named module ignores
+                                        META-INF/services.
+                                    -->
+                                    <include>io.grpc:grpc-netty-shaded</include>
+                                    <include>io.grpc:grpc-core</include>
+                                    <include>io.grpc:grpc-util</include>
+                                    <include>io.grpc:grpc-context</include>
+                                    <include>io.perfmark:perfmark-api</include>
+                                    <include>com.google.android:annotations</include>
                                 </includes>
                             </artifactSet>
                             <filters>
