@@ -25,7 +25,7 @@ import dev.ikm.tinkar.service.proto.TinkarConceptSemanticsResponse;
 import dev.ikm.tinkar.service.proto.TinkarSearchServiceGrpc;
 import dev.ikm.tinkar.service.proto.TinkarSemanticInfoResponse;
 import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,8 +49,40 @@ public class GrpcSearchClient implements AutoCloseable {
     private final ManagedChannel channel;
     private final TinkarSearchServiceGrpc.TinkarSearchServiceBlockingStub stub;
 
+    /**
+     * Registers gRPC's default name-resolver and load-balancer providers explicitly.
+     *
+     * <p>gRPC normally discovers these through {@link java.util.ServiceLoader}, which is inert
+     * here: this jar is a NAMED module, and a named module resolves services from
+     * {@code provides} clauses only — never from {@code META-INF/services}. A {@code provides}
+     * clause is impossible because the implementations are merged in by maven-shade-plugin at
+     * package time, after module-info is compiled ("service implementation must be defined in
+     * the same module as the provides directive").
+     *
+     * <p>gRPC's own hard-coded fallback does not rescue it either: the registries look up
+     * {@code io.grpc.internal.*} providers reflectively, and that path yields nothing in this
+     * module layer. Registering the two providers directly makes channel construction
+     * independent of discovery altogether.
+     *
+     * <p>Idempotent: {@code register} replaces an equal provider, and this runs once per client.
+     */
+    private static void registerDefaultProviders() {
+        io.grpc.NameResolverRegistry.getDefaultRegistry()
+                .register(new io.grpc.internal.DnsNameResolverProvider());
+        io.grpc.LoadBalancerRegistry.getDefaultRegistry()
+                .register(new io.grpc.internal.PickFirstLoadBalancerProvider());
+    }
+
     private GrpcSearchClient(String host, int port) {
-        this.channel = ManagedChannelBuilder.forAddress(host, port)
+        registerDefaultProviders();
+        // NettyChannelBuilder directly, not ManagedChannelBuilder.forAddress(): the latter
+        // resolves a transport through the ManagedChannelProvider SPI, which cannot work from
+        // this jar. ServiceLoader is inert (named module, see above), and grpc's hard-coded
+        // fallback in ManagedChannelRegistry looks for the UNSHADED name
+        // io.grpc.netty.NettyChannelProvider while the shaded artifact supplies
+        // io.grpc.netty.shaded.io.grpc.netty.NettyChannelProvider. Naming the builder skips
+        // provider discovery entirely.
+        this.channel = NettyChannelBuilder.forAddress(host, port)
                 .usePlaintext()
                 .build();
         this.stub = TinkarSearchServiceGrpc.newBlockingStub(channel);
