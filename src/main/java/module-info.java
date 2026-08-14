@@ -29,6 +29,7 @@
 import dev.ikm.tinkar.common.service.DataServiceController;
 import dev.ikm.tinkar.common.service.ServiceLifecycle;
 import dev.ikm.tinkar.provider.grpc.GrpcPrimitiveDataService;
+import dev.ikm.tinkar.provider.grpc.GrpcSearchService;
 import io.grpc.LoadBalancerProvider;
 import io.grpc.ManagedChannelProvider;
 import io.grpc.NameResolverProvider;
@@ -75,7 +76,11 @@ module dev.ikm.tinkar.provider.grpc {
 
     // Register GrpcPrimitiveDataService.Controller as a PrimitiveDataService provider
     provides DataServiceController with GrpcPrimitiveDataService.Controller;
-    provides ServiceLifecycle with GrpcPrimitiveDataService.Controller;
+    // Both controllers are lifecycle services: the datastore (DATA_STORAGE) and the
+    // gRPC-backed search engine (INDEXING). The search controller competes with the local
+    // Lucene provider for the SEARCH_ENGINE exclusion group, so that only one indexes.
+    provides ServiceLifecycle with GrpcPrimitiveDataService.Controller,
+            GrpcSearchService.Controller;
 
     // The shaded-in io.grpc.*Registry classes (ManagedChannelRegistry, NameResolverRegistry,
     // LoadBalancerRegistry, ServerRegistry) call ServiceLoader.load(...) for these SPIs at
