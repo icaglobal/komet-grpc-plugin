@@ -7,13 +7,13 @@
     <parent>
         <groupId>network.ike.platform</groupId>
         <artifactId>ike-parent</artifactId>
-        <version>149</version>
+        <version>164</version>
         <relativePath/>
     </parent>
 
     <groupId>network.ike.komet</groupId>
     <artifactId>komet-grpc-plugin</artifactId>
-    <version>1-SNAPSHOT</version>
+    <version>2-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <name>Komet gRPC Plugin</name>
@@ -60,10 +60,10 @@
 
     <properties>
         <!-- Main-line Komet BOM; manages komet module + tinkar versions. -->
-        <komet-bom.version>3.0.7-SNAPSHOT</komet-bom.version>
+        <komet-bom.version>3.0.7</komet-bom.version>
         <!-- Not managed by komet-bom; matches tinkar-core.version there. -->
-        <tinkar-core.version>1.127.2-SNAPSHOT</tinkar-core.version>
-        <tinkar-schema.version>1.43.0-SNAPSHOT</tinkar-schema.version>
+        <tinkar-core.version>1.127.2</tinkar-core.version>
+        <tinkar-schema.version>1.43.0</tinkar-schema.version>
         <grpc.version>1.78.0</grpc.version>
         <protobuf.version>4.30.2</protobuf.version>
         <protobuf-java.version>4.30.2-r3</protobuf-java.version>
