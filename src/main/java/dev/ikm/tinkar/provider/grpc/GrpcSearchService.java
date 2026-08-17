@@ -16,7 +16,10 @@
 package dev.ikm.tinkar.provider.grpc;
 
 import dev.ikm.tinkar.common.service.PrimitiveDataSearchResult;
+import dev.ikm.tinkar.common.service.ProviderController;
 import dev.ikm.tinkar.common.service.RemoteConceptSearchService;
+import dev.ikm.tinkar.common.service.ServiceExclusionGroup;
+import dev.ikm.tinkar.common.service.ServiceLifecyclePhase;
 import dev.ikm.tinkar.entity.EntityService;
 import dev.ikm.tinkar.entity.transform.TinkarSchemaToEntityTransformer;
 import dev.ikm.tinkar.common.service.SearchService;
@@ -30,8 +33,12 @@ import io.grpc.StatusRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.eclipse.collections.api.factory.Lists;
+import org.eclipse.collections.api.list.ImmutableList;
+
 import java.io.IOException;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
@@ -300,5 +307,87 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
             case SEMANTIC -> SearchSortOption.SEMANTIC;
             case SEMANTIC_ALPHA -> SearchSortOption.SEMANTIC_ALPHA;
         };
+    }
+
+    /**
+     * Controller registering this service as the JVM's search engine when Komet is backed by a
+     * remote gRPC datastore.
+     *
+     * <p>This controller and {@code SearchProvider.Controller} (local Lucene) are the two members
+     * of {@link ServiceExclusionGroup#SEARCH_ENGINE}, so exactly one of them activates. Selecting
+     * this one keeps the Lucene indexer from starting, which is what stops an empty index
+     * directory being created for a store that is never queried locally.
+     *
+     * <p>Selection is by name, via the lifecycle manager's
+     * {@code service.lifecycle.group.SEARCH_ENGINE} property, set by komet-desktop when the user
+     * picks the gRPC datastore. The name the manager matches is {@code GrpcSearchService.Controller}
+     * — {@code OuterClass.InnerClass}, not the simple class name.
+     *
+     * <p>This controller deliberately owns no connection lifecycle. The channel is created and
+     * closed by {@code GrpcPrimitiveDataService.Controller}, which runs in
+     * {@link ServiceLifecyclePhase#DATA_STORAGE} (200) — before {@link ServiceLifecyclePhase#INDEXING}
+     * (400) — so the singleton is always initialized by the time {@link #createProvider()} runs.
+     */
+    public static class Controller extends ProviderController<GrpcSearchService> {
+
+        /** Creates the controller. Invoked by {@code ServiceLoader} during service discovery. */
+        public Controller() {}
+
+        @Override
+        protected GrpcSearchService createProvider() {
+            // Initialized during DATA_STORAGE by GrpcPrimitiveDataService.Controller.startProvider().
+            // If that did not happen, this controller was selected without the gRPC datastore being
+            // active; get() throws with a message naming the missing property rather than yielding a
+            // half-built service.
+            return GrpcSearchService.get();
+        }
+
+        @Override
+        protected void startProvider(GrpcSearchService provider) {
+            // No-op: the gRPC channel is opened by GrpcPrimitiveDataService.Controller.
+        }
+
+        @Override
+        protected void stopProvider(GrpcSearchService provider) {
+            // No-op: the channel is closed by GrpcPrimitiveDataService.Controller.stopProvider().
+            // Closing it here would tear down the transport the datastore is still using.
+        }
+
+        @Override
+        protected String getProviderName() {
+            return "GrpcSearchService";
+        }
+
+        @Override
+        public ImmutableList<Class<?>> serviceClasses() {
+            return Lists.immutable.of(SearchService.class, RemoteConceptSearchService.class);
+        }
+
+        @Override
+        public ServiceLifecyclePhase getLifecyclePhase() {
+            return ServiceLifecyclePhase.INDEXING;
+        }
+
+        @Override
+        public Optional<ServiceExclusionGroup> getMutualExclusionGroup() {
+            return Optional.of(ServiceExclusionGroup.SEARCH_ENGINE);
+        }
+
+        @Override
+        public int getSubPriority() {
+            // Deliberately weaker than SearchProvider.Controller's 10.
+            //
+            // effectivePriority is phase.getBaseValue() + subPriority, so matching 10 would tie
+            // both controllers at INDEXING(400) + 10 = 410. When no selection is specified the
+            // lifecycle manager breaks ties with min() over that value, which on a tie resolves
+            // by discovery-map iteration order — i.e. arbitrarily. This controller would then be
+            // picked in a purely local session and fail in createProvider(), because nothing
+            // initialized the gRPC client.
+            //
+            // Losing the default keeps local Lucene the safe fallback for any launcher that does
+            // not set service.lifecycle.group.SEARCH_ENGINE. This controller is selected by name,
+            // never by priority.
+            return 60;
+        }
     }
 }
