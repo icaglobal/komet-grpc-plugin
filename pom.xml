@@ -13,7 +13,7 @@
 
     <groupId>network.ike.komet</groupId>
     <artifactId>komet-grpc-plugin</artifactId>
-    <version>4</version>
+    <version>5-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <name>Komet gRPC Plugin</name>
