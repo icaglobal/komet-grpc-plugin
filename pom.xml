@@ -7,7 +7,7 @@
     <parent>
         <groupId>network.ike.platform</groupId>
         <artifactId>ike-parent</artifactId>
-        <version>168</version>
+        <version>170</version>
         <relativePath/>
     </parent>
 
@@ -63,7 +63,7 @@
         <komet-bom.version>3.0.10-SNAPSHOT</komet-bom.version>
         <!-- Not managed by komet-bom; matches tinkar-core.version there. -->
         <tinkar-core.version>1.127.5-SNAPSHOT</tinkar-core.version>
-        <tinkar-schema.version>1.43.3-SNAPSHOT</tinkar-schema.version>
+        <tinkar-schema.version>1.43.2</tinkar-schema.version>
         <grpc.version>1.78.0</grpc.version>
         <protobuf.version>4.30.2</protobuf.version>
         <protobuf-java.version>4.30.2-r3</protobuf-java.version>
