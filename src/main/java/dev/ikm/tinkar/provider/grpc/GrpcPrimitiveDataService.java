@@ -458,6 +458,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
         @Override
         protected void startProvider(GrpcPrimitiveDataService provider) {
             if (!GrpcSearchService.isActive()) {
+                GrpcTlsConfig tls = GrpcTlsConfig.fromSystemProperties();
                 // -Dkomet.grpc.host / -Dkomet.grpc.port override the Service URL property,
                 // which itself defaults to localhost:9095. This lets a caller auto-select
                 // this controller by name (e.g. -Dkomet.datastore.controller) and still
@@ -474,26 +475,18 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
                         port = 9095;
                     }
                 } else {
-                    String url = properties.getOrDefault(SERVICE_URL_PROPERTY, "localhost:9095").trim();
-                    int colon = url.lastIndexOf(':');
-                    if (colon > 0) {
-                        host = url.substring(0, colon).trim();
-                        try {
-                            port = Integer.parseInt(url.substring(colon + 1).trim());
-                        } catch (NumberFormatException e) {
-                            LOG.error("Invalid port in gRPC service URL '{}', defaulting to 9095", url);
-                            port = 9095;
-                        }
-                    } else {
-                        host = url.isEmpty() ? "localhost" : url;
-                        port = 9095;
-                    }
+                    GrpcServiceTarget target = GrpcServiceTarget.parse(
+                            properties.getOrDefault(SERVICE_URL_PROPERTY, "localhost:9095"), tls);
+                    host = target.host();
+                    port = target.port();
+                    tls = target.tls();
                 }
-                LOG.info("Initializing gRPC connection to {}:{}", host, port);
-                GrpcSearchService.initialize(host, port);
+                LOG.info("Initializing gRPC connection to {}:{} [{}]", host, port, tls.describe());
+                GrpcSearchService.initialize(host, port, tls);
                 prefetchBootstrapConcepts();
             }
         }
+
 
         @Override
         protected void stopProvider(GrpcPrimitiveDataService provider) {

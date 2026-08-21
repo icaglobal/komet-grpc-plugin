@@ -25,10 +25,14 @@ import dev.ikm.tinkar.service.proto.TinkarConceptSemanticsResponse;
 import dev.ikm.tinkar.service.proto.TinkarSearchServiceGrpc;
 import dev.ikm.tinkar.service.proto.TinkarSemanticInfoResponse;
 import io.grpc.ManagedChannel;
+import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
+import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -37,8 +41,12 @@ import java.util.concurrent.TimeUnit;
  * <ul>
  *   <li>{@code komet.grpc.host} – hostname (default: {@code localhost})</li>
  *   <li>{@code komet.grpc.port} – port number (default: {@code 9090})</li>
+ *   <li>{@code komet.grpc.tls} – {@code true} to use TLS instead of plaintext</li>
+ *   <li>{@code komet.grpc.tls.ca} – PEM certificate to trust; implies TLS</li>
+ *   <li>{@code komet.grpc.tls.authority} – override hostname verification</li>
  * </ul>
  * Call {@link #initialize(String, int)} once at startup, then access via {@link #get()}.
+ * See {@link GrpcTlsConfig} for what the TLS settings mean.
  */
 public class GrpcSearchClient implements AutoCloseable {
 
@@ -73,7 +81,7 @@ public class GrpcSearchClient implements AutoCloseable {
                 .register(new io.grpc.internal.PickFirstLoadBalancerProvider());
     }
 
-    private GrpcSearchClient(String host, int port) {
+    private GrpcSearchClient(String host, int port, GrpcTlsConfig tls) {
         registerDefaultProviders();
         // NettyChannelBuilder directly, not ManagedChannelBuilder.forAddress(): the latter
         // resolves a transport through the ManagedChannelProvider SPI, which cannot work from
@@ -82,21 +90,76 @@ public class GrpcSearchClient implements AutoCloseable {
         // io.grpc.netty.NettyChannelProvider while the shaded artifact supplies
         // io.grpc.netty.shaded.io.grpc.netty.NettyChannelProvider. Naming the builder skips
         // provider discovery entirely.
-        this.channel = NettyChannelBuilder.forAddress(host, port)
-                .usePlaintext()
-                .build();
+        NettyChannelBuilder builder = NettyChannelBuilder.forAddress(host, port);
+        applyTransportSecurity(builder, tls);
+        if (tls.authorityOverride() != null) {
+            builder.overrideAuthority(tls.authorityOverride());
+        }
+        this.channel = builder.build();
         this.stub = TinkarSearchServiceGrpc.newBlockingStub(channel);
-        LOG.info("gRPC client initialised → {}:{}", host, port);
+        LOG.info("gRPC client initialised → {}:{} [{}]", host, port, tls.describe());
     }
 
     /**
-     * Creates and registers the singleton client.
+     * Selects plaintext or TLS on the builder.
+     *
+     * <p>The SslContext comes from the SHADED {@code GrpcSslContexts}, matching the shaded
+     * {@code NettyChannelBuilder} it is handed to. Mixing the shaded builder with an unshaded
+     * context fails at runtime with a confusing type error, because they are different classes
+     * that merely share a simple name.
+     *
+     * <p>No SslProvider is named: gRPC prefers the bundled tcnative/boringssl native and falls
+     * back to the JDK provider, and both are viable here — the JDK has supported ALPN, which
+     * gRPC requires, since Java 9.
+     */
+    private static void applyTransportSecurity(NettyChannelBuilder builder, GrpcTlsConfig tls) {
+        if (!tls.enabled()) {
+            builder.usePlaintext();
+            return;
+        }
+        if (tls.caCertPath() == null) {
+            // Validate against the JDK default trust store — the public-CA case.
+            builder.useTransportSecurity();
+            return;
+        }
+        File ca = new File(tls.caCertPath());
+        if (!ca.isFile()) {
+            throw new IllegalStateException("gRPC TLS trust material not found: "
+                    + ca.getAbsolutePath()
+                    + " (set " + GrpcTlsConfig.CA_PROPERTY + " to a readable PEM certificate,"
+                    + " or unset it to use the JDK trust store)");
+        }
+        try {
+            SslContext sslContext = GrpcSslContexts.forClient().trustManager(ca).build();
+            builder.sslContext(sslContext);
+        } catch (IOException e) {
+            throw new IllegalStateException(
+                    "Failed to build the gRPC TLS context from " + ca.getAbsolutePath(), e);
+        }
+    }
+
+    /**
+     * Creates and registers the singleton client, taking transport security from the
+     * {@code komet.grpc.tls*} system properties.
      *
      * @param host gRPC server hostname
      * @param port gRPC server port
      */
     public static void initialize(String host, int port) {
-        instance = new GrpcSearchClient(host, port);
+        initialize(host, port, GrpcTlsConfig.fromSystemProperties());
+    }
+
+    /**
+     * Creates and registers the singleton client with explicit transport security. Used when
+     * the caller already knows the transport — for example a service URL carrying a
+     * {@code grpcs://} scheme — rather than inferring it from system properties.
+     *
+     * @param host gRPC server hostname
+     * @param port gRPC server port
+     * @param tls  transport security settings
+     */
+    public static void initialize(String host, int port, GrpcTlsConfig tls) {
+        instance = new GrpcSearchClient(host, port, tls);
     }
 
     /** Returns {@code true} when the client has been initialised. */
