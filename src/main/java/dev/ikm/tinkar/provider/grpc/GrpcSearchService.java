@@ -65,13 +65,22 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
     private GrpcSearchService() {}
 
     /**
-     * Activates gRPC search mode by initializing the underlying {@link GrpcSearchClient}.
+     * Activates gRPC search mode by initializing the underlying {@link GrpcSearchClient},
+     * taking transport security from the {@code komet.grpc.tls*} system properties.
      * Must be called once at startup before any search calls.
      */
     public static void initialize(String host, int port) {
-        GrpcSearchClient.initialize(host, port);
+        initialize(host, port, GrpcTlsConfig.fromSystemProperties());
+    }
+
+    /**
+     * Activates gRPC search mode with explicit transport security, for a caller that already
+     * knows the transport — e.g. a service URL carrying a {@code grpcs://} scheme.
+     */
+    public static void initialize(String host, int port, GrpcTlsConfig tls) {
+        GrpcSearchClient.initialize(host, port, tls);
         INSTANCE = new GrpcSearchService();
-        LOG.info("GrpcSearchService initialized → {}:{}", host, port);
+        LOG.info("GrpcSearchService initialized → {}:{} [{}]", host, port, tls.describe());
     }
 
     /**
