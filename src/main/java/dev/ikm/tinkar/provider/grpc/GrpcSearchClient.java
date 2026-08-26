@@ -162,6 +162,17 @@ public class GrpcSearchClient implements AutoCloseable {
         instance = new GrpcSearchClient(host, port, tls);
     }
 
+    /**
+     * The channel this client owns, for stubs of other services on the same server.
+     *
+     * <p>Exposed rather than duplicated: a second channel would mean a second connection, a
+     * second TLS handshake, and separate lifecycle to shut down. Callers must not close it —
+     * {@link #close()} owns that.
+     */
+    ManagedChannel channel() {
+        return channel;
+    }
+
     /** Returns {@code true} when the client has been initialised. */
     public static boolean isAvailable() {
         return instance != null;

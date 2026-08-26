@@ -18,6 +18,7 @@ package dev.ikm.tinkar.provider.grpc;
 import dev.ikm.tinkar.common.service.PrimitiveDataSearchResult;
 import dev.ikm.tinkar.common.service.ProviderController;
 import dev.ikm.tinkar.common.service.RemoteConceptSearchService;
+import dev.ikm.tinkar.common.service.RemoteReasonerService;
 import dev.ikm.tinkar.common.service.ServiceExclusionGroup;
 import dev.ikm.tinkar.common.service.ServiceLifecyclePhase;
 import dev.ikm.tinkar.entity.EntityService;
@@ -56,7 +57,8 @@ import java.util.concurrent.CompletableFuture;
  * an empty array — all meaningful results come through the typed methods that carry
  * grouped/semantic structure back from the service.
  */
-public class GrpcSearchService implements SearchService, RemoteConceptSearchService {
+public class GrpcSearchService implements SearchService, RemoteConceptSearchService,
+        RemoteReasonerService {
 
     private static final Logger LOG = LoggerFactory.getLogger(GrpcSearchService.class);
 
@@ -267,6 +269,32 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
         return new SemanticInfo(semantic.getPatternName(), semanticId, fields);
     }
 
+    // --- RemoteReasonerService contract ---
+
+    /**
+     * Runs the reasoner on the remote service and adapts the result to the SPI's shape.
+     *
+     * <p>The classification and the writing of inferred results both happen server-side; this
+     * only triggers it and reports what came back. In gRPC mode the local entity store is
+     * ephemeral, so there is nothing here for a local reasoner to run against.
+     */
+    @Override
+    public RemoteReasonerOutcome runFullReasoner(PhaseListener listener) {
+        GrpcReasonerClient.ReasonerOutcome outcome = GrpcReasonerClient.runReasoner(
+                listener == null ? null : listener::onPhase);
+        return new RemoteReasonerOutcome(
+                outcome.classifiedConceptCount(),
+                outcome.conceptsWithInferredChanges(),
+                outcome.conceptsWithNavigationChanges(),
+                outcome.orphans(),
+                outcome.equivalentSets(),
+                outcome.commitTime(),
+                outcome.stampCoordinateText(),
+                outcome.logicCoordinateText(),
+                outcome.editCoordinateText(),
+                outcome.durationMs());
+    }
+
     // --- SearchService contract ---
 
     @Override
@@ -369,7 +397,8 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
 
         @Override
         public ImmutableList<Class<?>> serviceClasses() {
-            return Lists.immutable.of(SearchService.class, RemoteConceptSearchService.class);
+            return Lists.immutable.of(SearchService.class, RemoteConceptSearchService.class,
+                    RemoteReasonerService.class);
         }
 
         @Override
