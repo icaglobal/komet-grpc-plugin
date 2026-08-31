@@ -15,7 +15,7 @@ mvn clean verify -DskipTests -T 1C
 ## Key Facts
 
 - GroupId: `network.ike.komet`
-- Version: `5-SNAPSHOT`
+- Version: `6-SNAPSHOT`
 - Uses `--enable-preview` (Java 25)
 - BOM: imports `dev.ikm.ike:ike-bom` for dependency version management
 
