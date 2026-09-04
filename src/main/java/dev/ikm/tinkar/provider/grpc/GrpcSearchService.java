@@ -119,7 +119,8 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
                         g.getTopScore(),
                         g.getMatchingSemanticsList().stream()
                                 .map(m -> new MatchingSemantic(
-                                        m.getHighlightedText(), m.getPlainText(), m.getScore()))
+                                        m.getPublicIdList(), m.getHighlightedText(),
+                                        m.getPlainText(), m.getScore()))
                                 .toList()))
                 .toList();
     }
