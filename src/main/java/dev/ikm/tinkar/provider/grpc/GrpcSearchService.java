@@ -113,11 +113,14 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
                 .map(g -> new GroupedResult(
                         g.getPublicIdList(),
                         g.getFullyQualifiedName(),
+                        g.getPreferredName(),
+                        g.getHighlightedName(),
                         g.getActive(),
                         g.getTopScore(),
                         g.getMatchingSemanticsList().stream()
                                 .map(m -> new MatchingSemantic(
-                                        m.getHighlightedText(), m.getPlainText(), m.getScore()))
+                                        m.getPublicIdList(), m.getHighlightedText(),
+                                        m.getPlainText(), m.getScore()))
                                 .toList()))
                 .toList();
     }
