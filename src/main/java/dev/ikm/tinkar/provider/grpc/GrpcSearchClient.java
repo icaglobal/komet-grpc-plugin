@@ -22,7 +22,9 @@ import dev.ikm.tinkar.service.proto.TinkarConceptIdRequest;
 import dev.ikm.tinkar.service.proto.TinkarConceptSearchWithSortRequest;
 import dev.ikm.tinkar.service.proto.TinkarConceptSearchWithSortResponse;
 import dev.ikm.tinkar.service.proto.TinkarConceptSemanticsResponse;
-import dev.ikm.tinkar.service.proto.TinkarSearchServiceGrpc;
+import dev.ikm.tinkar.service.proto.IkeGraphRAGGrpc;
+import dev.ikm.tinkar.service.proto.IkeKnowledgeGraphGrpc;
+import dev.ikm.tinkar.service.proto.KnowledgeGraphConceptRequest;
 import dev.ikm.tinkar.service.proto.TinkarSemanticInfoResponse;
 import io.grpc.ManagedChannel;
 import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
@@ -55,7 +57,10 @@ public class GrpcSearchClient implements AutoCloseable {
     private static volatile GrpcSearchClient instance;
 
     private final ManagedChannel channel;
-    private final TinkarSearchServiceGrpc.TinkarSearchServiceBlockingStub stub;
+    /** Tier 1: search. */
+    private final IkeGraphRAGGrpc.IkeGraphRAGBlockingStub graphRagStub;
+    /** Tier 2: concept and semantic detail. */
+    private final IkeKnowledgeGraphGrpc.IkeKnowledgeGraphBlockingStub knowledgeGraphStub;
 
     /**
      * Registers gRPC's default name-resolver and load-balancer providers explicitly.
@@ -96,7 +101,8 @@ public class GrpcSearchClient implements AutoCloseable {
             builder.overrideAuthority(tls.authorityOverride());
         }
         this.channel = builder.build();
-        this.stub = TinkarSearchServiceGrpc.newBlockingStub(channel);
+        this.graphRagStub = IkeGraphRAGGrpc.newBlockingStub(channel);
+        this.knowledgeGraphStub = IkeKnowledgeGraphGrpc.newBlockingStub(channel);
         LOG.info("gRPC client initialised → {}:{} [{}]", host, port, tls.describe());
     }
 
@@ -199,11 +205,11 @@ public class GrpcSearchClient implements AutoCloseable {
                 .setMaxResults(maxResults)
                 .setSortBy(sortBy)
                 .build();
-        return stub.conceptSearchWithSort(request);
+        return graphRagStub.conceptSearchWithSort(request);
     }
 
     /**
-     * Calls {@code TinkarSearchService.LoadConceptEntityGraph} on the remote service.
+     * Calls {@code IkeKnowledgeGraph.LoadConceptEntityGraph} on the remote service.
      * Returns the full entity graph (concept + semantics + patterns + stamps) so the
      * caller can load them into a local entity store and display concept details.
      *
@@ -211,14 +217,16 @@ public class GrpcSearchClient implements AutoCloseable {
      * @return the response with all related TinkarMsg entities, or an error response
      */
     public TinkarConceptEntityResponse loadConceptEntityGraph(PublicId publicId) {
-        TinkarConceptIdRequest request = TinkarConceptIdRequest.newBuilder()
+        // Tier 2 takes the coordinate-aware request; leaving coordinate_override unset
+        // means the service resolves with its own defaults, which is what this call wants.
+        KnowledgeGraphConceptRequest request = KnowledgeGraphConceptRequest.newBuilder()
                 .setPublicId(publicId)
                 .build();
-        return stub.loadConceptEntityGraph(request);
+        return knowledgeGraphStub.loadConceptEntityGraph(request);
     }
 
     /**
-     * Calls {@code TinkarSearchService.InspectConcept} on the remote service.
+     * Calls {@code IkeKnowledgeGraph.InspectConcept} on the remote service.
      * Returns every semantic attached to the concept, each with its pattern name and
      * named field values — the discovery counterpart to {@link #getSemanticInfo}, which
      * requires a semantic's UUID up front.
@@ -227,14 +235,16 @@ public class GrpcSearchClient implements AutoCloseable {
      * @return the response listing the concept's semantics, or an error response
      */
     public TinkarConceptSemanticsResponse inspectConcept(PublicId publicId) {
-        TinkarConceptIdRequest request = TinkarConceptIdRequest.newBuilder()
+        // Tier 2 takes the coordinate-aware request; leaving coordinate_override unset
+        // means the service resolves with its own defaults, which is what this call wants.
+        KnowledgeGraphConceptRequest request = KnowledgeGraphConceptRequest.newBuilder()
                 .setPublicId(publicId)
                 .build();
-        return stub.inspectConcept(request);
+        return knowledgeGraphStub.inspectConcept(request);
     }
 
     /**
-     * Calls {@code TinkarSearchService.GetSemanticInfo} on the remote service.
+     * Calls {@code IkeKnowledgeGraph.GetSemanticInfo} on the remote service.
      * Returns the field values, pattern name, and STAMP info for a single semantic instance,
      * fetched by the semantic's own public ID — as opposed to {@link #conceptSearchWithSort}
      * or {@code InspectConcept}, which operate at concept granularity.
@@ -243,14 +253,16 @@ public class GrpcSearchClient implements AutoCloseable {
      * @return the response with the semantic's field-level detail, or an error response
      */
     public TinkarSemanticInfoResponse getSemanticInfo(PublicId publicId) {
-        TinkarConceptIdRequest request = TinkarConceptIdRequest.newBuilder()
+        // Tier 2 takes the coordinate-aware request; leaving coordinate_override unset
+        // means the service resolves with its own defaults, which is what this call wants.
+        KnowledgeGraphConceptRequest request = KnowledgeGraphConceptRequest.newBuilder()
                 .setPublicId(publicId)
                 .build();
-        return stub.getSemanticInfo(request);
+        return knowledgeGraphStub.getSemanticInfo(request);
     }
 
     /**
-     * Calls {@code TinkarSearchService.GetEntityByPublicId} on the remote service.
+     * Calls {@code IkeKnowledgeGraph.GetEntityByPublicId} on the remote service.
      * Returns a single entity plus its version stamps — used as a cache-miss fallback
      * by {@link GrpcPrimitiveDataService}.
      *
@@ -258,10 +270,12 @@ public class GrpcSearchClient implements AutoCloseable {
      * @return the response with the entity and its stamps, or an error response
      */
     public TinkarConceptEntityResponse getEntityByPublicId(PublicId publicId) {
-        TinkarConceptIdRequest request = TinkarConceptIdRequest.newBuilder()
+        // Tier 2 takes the coordinate-aware request; leaving coordinate_override unset
+        // means the service resolves with its own defaults, which is what this call wants.
+        KnowledgeGraphConceptRequest request = KnowledgeGraphConceptRequest.newBuilder()
                 .setPublicId(publicId)
                 .build();
-        return stub.getEntityByPublicId(request);
+        return knowledgeGraphStub.getEntityByPublicId(request);
     }
 
     @Override
