@@ -16,6 +16,9 @@
 package dev.ikm.tinkar.provider.grpc;
 
 import dev.ikm.tinkar.schema.PublicId;
+import dev.ikm.tinkar.schema.TinkarMsg;
+import dev.ikm.tinkar.service.proto.CommitEntitiesRequest;
+import dev.ikm.tinkar.service.proto.CommitEntitiesResponse;
 import dev.ikm.tinkar.service.proto.SearchSortOption;
 import dev.ikm.tinkar.service.proto.TinkarConceptEntityResponse;
 import dev.ikm.tinkar.service.proto.TinkarConceptIdRequest;
@@ -35,6 +38,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -276,6 +280,24 @@ public class GrpcSearchClient implements AutoCloseable {
                 .setPublicId(publicId)
                 .build();
         return knowledgeGraphStub.getEntityByPublicId(request);
+    }
+
+    /**
+     * Commits locally-authored entities to the server's store as one transaction.
+     *
+     * <p>The write counterpart to {@link #getEntityByPublicId}. In gRPC mode the local store is
+     * ephemeral, so an edit that is not sent here is lost when the client exits.
+     *
+     * @param entities        the entities in one client transaction, already serialized
+     * @param transactionName names the server-side transaction for audit
+     * @return the outcome, including the server-assigned commit time
+     */
+    public CommitEntitiesResponse commitEntities(List<TinkarMsg> entities, String transactionName) {
+        CommitEntitiesRequest request = CommitEntitiesRequest.newBuilder()
+                .addAllEntities(entities)
+                .setTransactionName(transactionName)
+                .build();
+        return knowledgeGraphStub.commitEntities(request);
     }
 
     @Override

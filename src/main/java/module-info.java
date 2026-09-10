@@ -28,6 +28,7 @@
  */
 import dev.ikm.tinkar.common.service.DataServiceController;
 import dev.ikm.tinkar.common.service.ServiceLifecycle;
+import dev.ikm.tinkar.provider.grpc.GrpcCommitForwarder;
 import dev.ikm.tinkar.provider.grpc.GrpcPrimitiveDataService;
 import dev.ikm.tinkar.provider.grpc.GrpcSearchService;
 import io.grpc.LoadBalancerProvider;
@@ -79,8 +80,12 @@ module dev.ikm.tinkar.provider.grpc {
     // Both controllers are lifecycle services: the datastore (DATA_STORAGE) and the
     // gRPC-backed search engine (INDEXING). The search controller competes with the local
     // Lucene provider for the SEARCH_ENGINE exclusion group, so that only one indexes.
+    // GrpcCommitForwarder is the third: it sends locally-committed entities on to the remote
+    // store, which in gRPC mode is the only durable one. It runs at CORE_SERVICES, after the
+    // dataset load, so the load itself is not re-sent as client edits.
     provides ServiceLifecycle with GrpcPrimitiveDataService.Controller,
-            GrpcSearchService.Controller;
+            GrpcSearchService.Controller,
+            GrpcCommitForwarder;
 
     // The shaded-in io.grpc.*Registry classes (ManagedChannelRegistry, NameResolverRegistry,
     // LoadBalancerRegistry, ServerRegistry) call ServiceLoader.load(...) for these SPIs at
