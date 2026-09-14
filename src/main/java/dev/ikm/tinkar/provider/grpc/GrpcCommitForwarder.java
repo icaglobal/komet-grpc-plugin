@@ -30,6 +30,8 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 /**
@@ -56,6 +58,32 @@ import java.util.function.Consumer;
 public class GrpcCommitForwarder implements ServiceLifecycle {
 
     private static final Logger LOG = LoggerFactory.getLogger(GrpcCommitForwarder.class);
+
+    /**
+     * Transactions that seed client-local scaffolding and are never forwarded.
+     *
+     * <p>Each is written at startup by a named seeder — {@code PatternDefinitionSeeder}
+     * (komet/knowledge-layout), {@code ComplexClauseBootstrap} (complex-clause-plugin) and
+     * {@code NarratorIdentity} (komet-claude-plugin) — to make the client's own store usable.
+     * Against a local datastore that is a one-off: the seed persists, {@code isPresent()} finds
+     * it next launch, and the seeder does nothing. In gRPC mode neither half holds. The client
+     * store is ephemeral, so the seeder runs every launch; and
+     * {@code GrpcPrimitiveDataService.hasPublicId} only consults the in-memory map, so the
+     * seeder cannot see that the server already has these patterns however many times they are
+     * sent. Forwarding therefore writes every client's scaffolding into a dataset shared with
+     * everyone else, on every launch, and never converges. Measured at 52 commits and 4.1s of
+     * round-trips on the JavaFX thread, just to open a journal.
+     *
+     * <p>Matched exactly rather than by prefix: a deny-list that over-matches drops a real
+     * edit, and that failure is silent.
+     */
+    private static final Set<String> CLIENT_LOCAL_TRANSACTIONS = Set.of(
+            "Seed pattern-definition patterns",
+            "complex-clause-bootstrap",
+            "komet-narrator-identity-seed");
+
+    /** Transaction names already reported as skipped, so the log says it once rather than per commit. */
+    private final Set<String> reportedSkips = ConcurrentHashMap.newKeySet();
 
     private final Consumer<CommitBroadcaster.CommitNotification> listener = this::forward;
 
@@ -84,6 +112,15 @@ public class GrpcCommitForwarder implements ServiceLifecycle {
             // Local datastore mode — the commit is already durable where it landed.
             return;
         }
+        String transactionName = notification.transactionName();
+        if (transactionName != null && CLIENT_LOCAL_TRANSACTIONS.contains(transactionName)) {
+            // Logged once per name: silence is the failure mode a deny-list has to guard against.
+            if (reportedSkips.add(transactionName)) {
+                LOG.info("Not forwarding '{}' — client-local scaffolding, not a user edit", transactionName);
+            }
+            return;
+        }
+
         try {
             EntityToTinkarSchemaTransformer transformer = EntityToTinkarSchemaTransformer.getInstance();
             List<TinkarMsg> messages = new ArrayList<>();
