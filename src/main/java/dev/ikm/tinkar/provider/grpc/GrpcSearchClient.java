@@ -99,7 +99,14 @@ public class GrpcSearchClient implements AutoCloseable {
         // io.grpc.netty.NettyChannelProvider while the shaded artifact supplies
         // io.grpc.netty.shaded.io.grpc.netty.NettyChannelProvider. Naming the builder skips
         // provider discovery entirely.
-        NettyChannelBuilder builder = NettyChannelBuilder.forAddress(host, port);
+        NettyChannelBuilder builder = NettyChannelBuilder.forAddress(host, port)
+                // A reasoner call can sit silent for minutes between phase events. Without pings a
+                // dropped connection in that gap goes unnoticed and the call waits forever. Only
+                // while a call is active, and no more often than the server permits
+                // (grpc.server.permit-keep-alive-time), or it answers with GOAWAY.
+                .keepAliveTime(60, TimeUnit.SECONDS)
+                .keepAliveTimeout(20, TimeUnit.SECONDS)
+                .keepAliveWithoutCalls(false);
         applyTransportSecurity(builder, tls);
         if (tls.authorityOverride() != null) {
             builder.overrideAuthority(tls.authorityOverride());
