@@ -7,7 +7,7 @@
     <parent>
         <groupId>network.ike.platform</groupId>
         <artifactId>ike-parent</artifactId>
-        <version>182</version>
+        <version>184</version>
         <relativePath/>
     </parent>
 
@@ -69,6 +69,7 @@
         <protobuf-java.version>4.30.2-r3</protobuf-java.version>
         <tinkar-jpms-deps.groupId>dev.ikm.jpms</tinkar-jpms-deps.groupId>
         <maven.javadoc.skip>true</maven.javadoc.skip>
+        <java.version>27</java.version>
     </properties>
 
     <dependencyManagement>
