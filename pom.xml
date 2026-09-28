@@ -7,7 +7,7 @@
     <parent>
         <groupId>network.ike.platform</groupId>
         <artifactId>ike-parent</artifactId>
-        <version>178</version>
+        <version>186</version>
         <relativePath/>
     </parent>
 
@@ -69,6 +69,7 @@
         <protobuf-java.version>4.30.2-r3</protobuf-java.version>
         <tinkar-jpms-deps.groupId>dev.ikm.jpms</tinkar-jpms-deps.groupId>
         <maven.javadoc.skip>true</maven.javadoc.skip>
+        <java.version>27</java.version>
     </properties>
 
     <dependencyManagement>
@@ -76,7 +77,7 @@
             <dependency>
                 <groupId>dev.ikm.komet</groupId>
                 <artifactId>komet-bom</artifactId>
-                <version>${komet-bom.version}</version>
+                <version>3.0.12-SNAPSHOT</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
