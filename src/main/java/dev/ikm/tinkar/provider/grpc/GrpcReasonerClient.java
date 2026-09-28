@@ -15,17 +15,18 @@
  */
 package dev.ikm.tinkar.provider.grpc;
 
+import dev.ikm.tinkar.service.proto.CancelReasonerRequest;
 import dev.ikm.tinkar.service.proto.IkeAdminGrpc;
 import dev.ikm.tinkar.service.proto.RunReasonerEvent;
 import dev.ikm.tinkar.service.proto.RunReasonerRequest;
 import dev.ikm.tinkar.service.proto.RunReasonerResult;
 import dev.ikm.tinkar.common.service.TrackingCallable;
-import io.grpc.Context;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.Iterator;
 import java.util.List;
 import java.util.UUID;
@@ -111,11 +112,16 @@ public final class GrpcReasonerClient {
     }
 
     /**
-     * As {@link #runReasoner(PhaseListener)}, cancelling the call if {@code tracker} is cancelled.
+     * As {@link #runReasoner(PhaseListener)}, stopping the run if {@code tracker} is cancelled.
      *
-     * <p>Cancelling the call's gRPC context resets the stream, which the server sees at once and
-     * turns into a cancel of the classification itself — so this stops the work, not just the
-     * wait for it.
+     * <p>The run belongs to the server, not to this call. If one is already going, this joins
+     * it — its completed phases are replayed first — rather than starting another. Ending the
+     * call early, or closing Komet, only stops watching; the classification carries on and a
+     * later call picks it up again.
+     *
+     * <p>Cancelling {@code tracker} is the one thing that stops the run: it sends
+     * {@code CancelReasoner}, then keeps reading until the server reports the run stopped, so
+     * this returns only once nothing more will be written.
      *
      * @param tracker cancelling it stops the run; may be null
      * @throws CancellationException if the run was cancelled
@@ -129,37 +135,39 @@ public final class GrpcReasonerClient {
                 IkeAdminGrpc.newBlockingStub(GrpcSearchClient.get().channel());
 
         LOG.info("Requesting remote reasoner run");
-        Context.CancellableContext callContext = Context.current().withCancellation();
-        Thread watcher = startCancelWatcher(tracker, callContext);
-        Context previous = callContext.attach();
-        RunReasonerResult result = null;
+        Thread watcher = startCancelWatcher(tracker, stub);
         try {
             Iterator<RunReasonerEvent> events =
                     stub.runReasoner(RunReasonerRequest.getDefaultInstance());
-            result = readEvents(events, onPhase);
+            return toOutcome(readEvents(events, onPhase));
         } catch (StatusRuntimeException e) {
+            // The stream can still end early if this thread is interrupted by Komet's own cancel.
+            // By then the cancel has been sent, so report it as the cancel it is.
             if (e.getStatus().getCode() == Status.Code.CANCELLED && tracker != null && tracker.isCancelled()) {
-                LOG.info("Remote reasoner run cancelled");
                 CancellationException cancelled = new CancellationException("Remote reasoner run was cancelled");
                 cancelled.initCause(e);
                 throw cancelled;
             }
             throw e;
         } finally {
-            callContext.detach(previous);
-            callContext.cancel(null);
-            if (watcher != null) {
+            // Not once cancelled: the watcher may still be sending the cancel, and interrupting
+            // it would drop the one call that stops the run. It exits on its own after sending.
+            if (watcher != null && !tracker.isCancelled()) {
                 watcher.interrupt();
             }
         }
-        return toOutcome(result);
     }
 
     private static RunReasonerResult readEvents(Iterator<RunReasonerEvent> events, PhaseListener onPhase) {
         RunReasonerResult result = null;
         while (events.hasNext()) {
             RunReasonerEvent event = events.next();
-            if (event.hasPhase()) {
+            if (event.hasRun()) {
+                if (!event.getRun().getStarted()) {
+                    LOG.info("Joined the remote reasoner run already in progress, started at {}",
+                            Instant.ofEpochMilli(event.getRun().getStartedAt()));
+                }
+            } else if (event.hasPhase()) {
                 var phase = event.getPhase();
                 LOG.info("Reasoner step {} of {}: {}",
                         phase.getStep(), phase.getTotalSteps(), phase.getMessage());
@@ -174,28 +182,31 @@ public final class GrpcReasonerClient {
     }
 
     /**
-     * Cancels {@code callContext} once {@code tracker} is cancelled.
+     * Sends {@code CancelReasoner} once {@code tracker} is cancelled.
      *
      * <p>A poller because the calling thread is blocked in the stream iterator for the length of
      * a phase — minutes on a large dataset — and cannot notice a cancel itself. Coarse on
      * purpose; a quarter-second is ample for stopping a run that long.
      */
-    private static Thread startCancelWatcher(TrackingCallable<?> tracker, Context.CancellableContext callContext) {
+    private static Thread startCancelWatcher(TrackingCallable<?> tracker, IkeAdminGrpc.IkeAdminBlockingStub stub) {
         if (tracker == null) {
             return null;
         }
         Thread watcher = new Thread(() -> {
-            while (!callContext.isCancelled()) {
-                if (tracker.isCancelled()) {
-                    LOG.info("Cancel requested — cancelling the remote reasoner call");
-                    callContext.cancel(null);
-                    return;
-                }
+            while (!tracker.isCancelled()) {
                 try {
                     Thread.sleep(250L);
                 } catch (InterruptedException e) {
                     return;
                 }
+            }
+            LOG.info("Cancel requested — asking the server to stop the reasoner run");
+            try {
+                stub.cancelReasoner(CancelReasonerRequest.getDefaultInstance());
+            } catch (StatusRuntimeException e) {
+                // FAILED_PRECONDITION: the run ended before the cancel arrived. Its result is on
+                // the way regardless, so there is nothing to do.
+                LOG.info("Reasoner cancel not applied: {}", e.getStatus());
             }
         }, "grpc-reasoner-cancel-watcher");
         watcher.setDaemon(true);
@@ -207,6 +218,10 @@ public final class GrpcReasonerClient {
         if (result == null) {
             throw new IllegalStateException(
                     "Reasoner stream ended without a result — the server closed it early");
+        }
+        if (result.getCancelled()) {
+            LOG.info("Remote reasoner run cancelled after {}ms", result.getDurationMs());
+            throw new CancellationException("Remote reasoner run was cancelled");
         }
         if (!result.getSuccess()) {
             throw new IllegalStateException("Remote reasoner failed: " + result.getErrorMessage());
