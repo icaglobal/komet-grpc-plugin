@@ -283,8 +283,14 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
      */
     @Override
     public RemoteReasonerOutcome runFullReasoner(PhaseListener listener) {
+        return runFullReasoner(listener, null);
+    }
+
+    @Override
+    public RemoteReasonerOutcome runFullReasoner(PhaseListener listener,
+                                                 dev.ikm.tinkar.common.service.TrackingCallable<?> tracker) {
         GrpcReasonerClient.ReasonerOutcome outcome = GrpcReasonerClient.runReasoner(
-                listener == null ? null : listener::onPhase);
+                listener == null ? null : listener::onPhase, tracker);
         return new RemoteReasonerOutcome(
                 outcome.classifiedConceptCount(),
                 outcome.conceptsWithInferredChanges(),
