@@ -400,6 +400,26 @@
                                 </includes>
                             </artifactSet>
                             <filters>
+                                <!-- Every shaded jar brings a manifest of its own. This
+                                     jar keeps the one the jar plugin wrote for it, so the
+                                     others are left out, which also ends the shade plugin's
+                                     "overlapping resource" warning. -->
+                                <filter>
+                                    <artifact>io.grpc:*</artifact>
+                                    <excludes><exclude>META-INF/MANIFEST.MF</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>com.google.guava:*</artifact>
+                                    <excludes><exclude>META-INF/MANIFEST.MF</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>io.perfmark:*</artifact>
+                                    <excludes><exclude>META-INF/MANIFEST.MF</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>com.google.android:*</artifact>
+                                    <excludes><exclude>META-INF/MANIFEST.MF</exclude></excludes>
+                                </filter>
                                 <filter>
                                     <artifact>io.grpc:grpc-api</artifact>
                                     <excludes><exclude>META-INF/versions/*/module-info.class</exclude></excludes>
