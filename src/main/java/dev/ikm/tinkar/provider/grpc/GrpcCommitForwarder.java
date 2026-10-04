@@ -20,6 +20,7 @@ import dev.ikm.tinkar.common.service.ServiceLifecycle;
 import dev.ikm.tinkar.common.service.ServiceLifecyclePhase;
 import dev.ikm.tinkar.common.util.broadcast.CommitBroadcaster;
 import dev.ikm.tinkar.entity.Entity;
+import dev.ikm.tinkar.entity.EntityHandle;
 import dev.ikm.tinkar.entity.EntityService;
 import dev.ikm.tinkar.entity.StampEntity;
 import dev.ikm.tinkar.entity.transform.EntityToTinkarSchemaTransformer;
@@ -134,7 +135,7 @@ public class GrpcCommitForwarder implements ServiceLifecycle {
                 }
             }
             for (int componentNid : notification.componentNids()) {
-                Entity<?> entity = EntityService.get().getEntityFast(componentNid);
+                Entity<?> entity = EntityHandle.get(componentNid).orNull();
                 if (entity != null) {
                     messages.add(transformer.transform(entity));
                 }
