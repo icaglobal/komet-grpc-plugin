@@ -15,6 +15,7 @@
  */
 package dev.ikm.tinkar.provider.grpc;
 
+import dev.ikm.tinkar.common.service.internal.EntityStore;
 import dev.ikm.tinkar.common.id.PublicId;
 import dev.ikm.tinkar.common.service.DataActivity;
 import dev.ikm.tinkar.common.service.DataServiceController;
@@ -72,7 +73,7 @@ import java.util.function.ObjIntConsumer;
  * <p>Unlike {@code ProviderEphemeral}, this class has no search-indexing side effects in
  * {@link #merge} — search in gRPC mode is handled entirely by {@link GrpcSearchService}.
  */
-public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenerator, NoLocalUserStore {
+public class GrpcPrimitiveDataService implements PrimitiveDataService, EntityStore, NidGenerator, NoLocalUserStore {
 
     private static final Logger LOG = LoggerFactory.getLogger(GrpcPrimitiveDataService.class);
 
