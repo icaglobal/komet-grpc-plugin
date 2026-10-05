@@ -38,6 +38,7 @@ import org.eclipse.collections.api.factory.Lists;
 import org.eclipse.collections.api.list.ImmutableList;
 
 import java.io.IOException;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -253,6 +254,19 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
      * Adapts a proto semantic to {@link SemanticInfo}, preferring the server's named fields and
      * falling back to positional names when talking to a server that predates them.
      */
+    /** UUID text by {@link UUID#compareTo}; text that is not a UUID after every UUID, by text. */
+    private static final Comparator<String> BY_UUID = Comparator
+            .comparing(GrpcSearchService::uuidOrNull, Comparator.nullsLast(Comparator.<UUID>naturalOrder()))
+            .thenComparing(Comparator.naturalOrder());
+
+    private static UUID uuidOrNull(String text) {
+        try {
+            return UUID.fromString(text);
+        } catch (IllegalArgumentException notAUuid) {
+            return null;
+        }
+    }
+
     private static SemanticInfo toSemanticInfo(TinkarConceptSemanticInfo semantic) {
         List<NamedField> fields;
         if (semantic.getNamedFieldsCount() > 0) {
@@ -267,8 +281,11 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
             }
             fields = List.copyOf(positional);
         }
-        String semanticId = semantic.getSemanticPublicId().getUuidsCount() > 0
-                ? semantic.getSemanticPublicId().getUuids(0) : "";
+        // The server sends every UUID of the semantic's public id; the least stands for it, so
+        // the text does not depend on the order they are listed in (PublicId.leastUuid()).
+        String semanticId = semantic.getSemanticPublicId().getUuidsList().stream()
+                .min(BY_UUID)
+                .orElse("");
         return new SemanticInfo(semantic.getPatternName(), semanticId, fields);
     }
 
