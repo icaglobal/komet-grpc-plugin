@@ -15,6 +15,7 @@
  */
 package dev.ikm.tinkar.provider.grpc;
 
+import dev.ikm.tinkar.entity.changeset.SchemaIds;
 import dev.ikm.tinkar.common.service.internal.EntityStore;
 import dev.ikm.tinkar.common.id.PublicId;
 import dev.ikm.tinkar.common.service.DataActivity;
@@ -226,9 +227,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
 
         // Won the race — perform the gRPC call
         try {
-            dev.ikm.tinkar.schema.PublicId protoId = dev.ikm.tinkar.schema.PublicId.newBuilder()
-                    .addAllUuids(uuids.stream().map(UUID::toString).toList())
-                    .build();
+            dev.ikm.tinkar.schema.PublicId protoId = SchemaIds.toSchema(uuids.toArray(UUID[]::new));
             var response = GrpcSearchClient.get().getEntityByPublicId(protoId);
             if (!response.getSuccess() || response.getEntitiesList().isEmpty()) {
                 LOG.debug("gRPC fallback: entity not found on server for nid {}", nid);

@@ -440,6 +440,14 @@
                                     <artifact>com.google.guava:guava</artifact>
                                     <excludes><exclude>META-INF/versions/*/module-info.class</exclude></excludes>
                                 </filter>
+                                <filter>
+                                    <artifact>com.google.guava:failureaccess</artifact>
+                                    <excludes><exclude>META-INF/versions/*/module-info.class</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>io.grpc:grpc-netty-shaded</artifact>
+                                    <excludes><exclude>META-INF/versions/*/module-info.class</exclude></excludes>
+                                </filter>
                             </filters>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
