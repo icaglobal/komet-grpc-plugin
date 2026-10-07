@@ -7,7 +7,7 @@
     <parent>
         <groupId>network.ike.platform</groupId>
         <artifactId>ike-parent</artifactId>
-        <version>191</version>
+        <version>196</version>
         <relativePath/>
     </parent>
 
@@ -70,6 +70,12 @@
         <tinkar-jpms-deps.groupId>dev.ikm.jpms</tinkar-jpms-deps.groupId>
         <maven.javadoc.skip>true</maven.javadoc.skip>
         <java.version>27</java.version>
+        <!-- The nid build check (tinkar-core nid-check, IKE-Network/ike-issues#1244): how it
+             reports (error, or warning for a census), which classes may narrow a nid, and
+             javac's cap on warnings, raised for a census. -->
+        <nid-check.report>error</nid-check.report>
+        <nid-check.allow>dev.ikm.tinkar.provider.grpc.</nid-check.allow>
+        <javac.maxwarns>100</javac.maxwarns>
     </properties>
 
     <dependencyManagement>
@@ -251,6 +257,34 @@
             <version>13.0.0</version>
             <scope>provided</scope>
         </dependency>
+
+        <!-- The provider conformance suite (tinkar-core test-fixtures), run against this
+             provider, with the entity layer it serves. -->
+        <dependency>
+            <groupId>dev.ikm.tinkar</groupId>
+            <artifactId>test-fixtures</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.ikm.tinkar</groupId>
+            <artifactId>entity-provider</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.ikm.tinkar</groupId>
+            <artifactId>executor-provider</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.ikm.tinkar</groupId>
+            <artifactId>test-logging</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -264,7 +298,18 @@
                         <arg>--add-reads</arg>
                         <arg>dev.ikm.tinkar.provider.grpc=ALL-UNNAMED</arg>
                         <arg>--enable-preview</arg>
+                        <!-- The nid build check (tinkar-core nid-check, IKE-Network/ike-issues#1244). -->
+                        <arg>-Xplugin:NidCheck report=${nid-check.report} allow=${nid-check.allow}</arg>
+                        <arg>-Xmaxwarns</arg>
+                        <arg>${javac.maxwarns}</arg>
                     </compilerArgs>
+                    <annotationProcessorPathsUseDepMgmt>true</annotationProcessorPathsUseDepMgmt>
+                    <annotationProcessorPaths combine.children="append">
+                        <path>
+                            <groupId>dev.ikm.tinkar</groupId>
+                            <artifactId>nid-check</artifactId>
+                        </path>
+                    </annotationProcessorPaths>
                 </configuration>
             </plugin>
 
@@ -400,6 +445,26 @@
                                 </includes>
                             </artifactSet>
                             <filters>
+                                <!-- Every shaded jar brings a manifest of its own. This
+                                     jar keeps the one the jar plugin wrote for it, so the
+                                     others are left out, which also ends the shade plugin's
+                                     "overlapping resource" warning. -->
+                                <filter>
+                                    <artifact>io.grpc:*</artifact>
+                                    <excludes><exclude>META-INF/MANIFEST.MF</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>com.google.guava:*</artifact>
+                                    <excludes><exclude>META-INF/MANIFEST.MF</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>io.perfmark:*</artifact>
+                                    <excludes><exclude>META-INF/MANIFEST.MF</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>com.google.android:*</artifact>
+                                    <excludes><exclude>META-INF/MANIFEST.MF</exclude></excludes>
+                                </filter>
                                 <filter>
                                     <artifact>io.grpc:grpc-api</artifact>
                                     <excludes><exclude>META-INF/versions/*/module-info.class</exclude></excludes>
@@ -418,6 +483,14 @@
                                 </filter>
                                 <filter>
                                     <artifact>com.google.guava:guava</artifact>
+                                    <excludes><exclude>META-INF/versions/*/module-info.class</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>com.google.guava:failureaccess</artifact>
+                                    <excludes><exclude>META-INF/versions/*/module-info.class</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>io.grpc:grpc-netty-shaded</artifact>
                                     <excludes><exclude>META-INF/versions/*/module-info.class</exclude></excludes>
                                 </filter>
                             </filters>

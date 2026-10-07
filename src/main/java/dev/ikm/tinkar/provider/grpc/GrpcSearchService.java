@@ -15,6 +15,8 @@
  */
 package dev.ikm.tinkar.provider.grpc;
 
+import java.util.Arrays;
+import dev.ikm.tinkar.entity.changeset.SchemaIds;
 import dev.ikm.tinkar.common.service.PrimitiveDataSearchResult;
 import dev.ikm.tinkar.common.service.ProviderController;
 import dev.ikm.tinkar.common.service.RemoteConceptSearchService;
@@ -38,6 +40,7 @@ import org.eclipse.collections.api.factory.Lists;
 import org.eclipse.collections.api.list.ImmutableList;
 
 import java.io.IOException;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -111,7 +114,7 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
         var response = GrpcSearchClient.get().conceptSearchWithSort(query, maxResults, protoSort);
         return response.getGroupedResultsList().stream()
                 .map(g -> new GroupedResult(
-                        g.getPublicIdList(),
+                        uuidTexts(g.getPublicId()),
                         g.getFullyQualifiedName(),
                         g.getPreferredName(),
                         g.getHighlightedName(),
@@ -119,10 +122,17 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
                         g.getTopScore(),
                         g.getMatchingSemanticsList().stream()
                                 .map(m -> new MatchingSemantic(
-                                        m.getPublicIdList(), m.getHighlightedText(),
+                                        uuidTexts(m.getPublicId()), m.getHighlightedText(),
                                         m.getPlainText(), m.getScore()))
                                 .toList()))
                 .toList();
+    }
+
+    /** A wire public id's UUIDs as text, as the plugin's results carry them; empty when it has none. */
+    private static List<String> uuidTexts(PublicId publicId) {
+        return SchemaIds.hasUuids(publicId)
+                ? Arrays.stream(SchemaIds.uuids(publicId)).map(UUID::toString).toList()
+                : List.of();
     }
 
     /**
@@ -134,7 +144,7 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
         var response = GrpcSearchClient.get().conceptSearchWithSort(query, maxResults, protoSort);
         return response.getResultsList().stream()
                 .map(r -> new SemanticResult(
-                        r.getPublicIdList(),
+                        uuidTexts(r.getPublicId()),
                         r.getFullyQualifiedName(),
                         r.getHighlightedText(),
                         r.getActive(),
@@ -162,9 +172,7 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
         if (!isActive()) {
             throw new IllegalStateException("GrpcSearchService not initialized");
         }
-        PublicId protoPublicId = PublicId.newBuilder()
-                .addAllUuids(publicIds.stream().map(UUID::toString).toList())
-                .build();
+        PublicId protoPublicId = SchemaIds.toSchema(publicIds.toArray(UUID[]::new));
         TinkarConceptEntityResponse response =
                 GrpcSearchClient.get().loadConceptEntityGraph(protoPublicId);
         if (!response.getSuccess()) {
@@ -211,7 +219,7 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
         if (!isActive()) {
             throw new IllegalStateException("GrpcSearchService not initialized");
         }
-        PublicId protoPublicId = PublicId.newBuilder().addUuids(publicId.toString()).build();
+        PublicId protoPublicId = SchemaIds.toSchema(publicId);
         TinkarSemanticInfoResponse response = GrpcSearchClient.get().getSemanticInfo(protoPublicId);
         if (!response.getSuccess()) {
             throw new RuntimeException("GetSemanticInfo failed: " + response.getErrorMessage());
@@ -236,7 +244,7 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
         if (!isActive()) {
             throw new IllegalStateException("GrpcSearchService not initialized");
         }
-        PublicId protoPublicId = PublicId.newBuilder().addUuids(conceptId.toString()).build();
+        PublicId protoPublicId = SchemaIds.toSchema(conceptId);
         TinkarConceptSemanticsResponse response = GrpcSearchClient.get().inspectConcept(protoPublicId);
         if (!response.getSuccess()) {
             throw new RuntimeException("InspectConcept failed: " + response.getErrorMessage());
@@ -253,6 +261,19 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
      * Adapts a proto semantic to {@link SemanticInfo}, preferring the server's named fields and
      * falling back to positional names when talking to a server that predates them.
      */
+    /** UUID text by {@link UUID#compareTo}; text that is not a UUID after every UUID, by text. */
+    private static final Comparator<String> BY_UUID = Comparator
+            .comparing(GrpcSearchService::uuidOrNull, Comparator.nullsLast(Comparator.<UUID>naturalOrder()))
+            .thenComparing(Comparator.naturalOrder());
+
+    private static UUID uuidOrNull(String text) {
+        try {
+            return UUID.fromString(text);
+        } catch (IllegalArgumentException notAUuid) {
+            return null;
+        }
+    }
+
     private static SemanticInfo toSemanticInfo(TinkarConceptSemanticInfo semantic) {
         List<NamedField> fields;
         if (semantic.getNamedFieldsCount() > 0) {
@@ -267,8 +288,11 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
             }
             fields = List.copyOf(positional);
         }
-        String semanticId = semantic.getSemanticPublicId().getUuidsCount() > 0
-                ? semantic.getSemanticPublicId().getUuids(0) : "";
+        // The server sends every UUID of the semantic's public id; the least stands for it, so
+        // the text does not depend on the order they are listed in (PublicId.leastUuid()).
+        String semanticId = SchemaIds.hasUuids(semantic.getSemanticPublicId())
+                ? Arrays.stream(SchemaIds.uuids(semantic.getSemanticPublicId())).min(Comparator.naturalOrder()).map(UUID::toString).orElse("")
+                : "";
         return new SemanticInfo(semantic.getPatternName(), semanticId, fields);
     }
 

@@ -15,6 +15,7 @@
  */
 package dev.ikm.tinkar.provider.grpc;
 
+import dev.ikm.tinkar.entity.changeset.SchemaIds;
 import dev.ikm.tinkar.service.proto.CancelReasonerRequest;
 import dev.ikm.tinkar.service.proto.IkeAdminGrpc;
 import dev.ikm.tinkar.service.proto.RunReasonerEvent;
@@ -248,7 +249,7 @@ public final class GrpcReasonerClient {
     private static List<List<UUID>> toUuidLists(
             List<dev.ikm.tinkar.schema.PublicId> publicIds) {
         return publicIds.stream()
-                .map(id -> id.getUuidsList().stream().map(UUID::fromString).toList())
+                .map(id -> List.of(SchemaIds.uuids(id)))
                 .toList();
     }
 }

@@ -15,7 +15,10 @@
  */
 package dev.ikm.tinkar.provider.grpc;
 
+import dev.ikm.tinkar.entity.changeset.SchemaIds;
+import dev.ikm.tinkar.common.service.internal.EntityStore;
 import dev.ikm.tinkar.common.id.PublicId;
+import dev.ikm.tinkar.common.id.impl.NidLayout;
 import dev.ikm.tinkar.common.service.DataActivity;
 import dev.ikm.tinkar.common.service.DataServiceController;
 import dev.ikm.tinkar.common.service.DataServiceProperty;
@@ -35,7 +38,7 @@ import dev.ikm.tinkar.entity.SemanticEntity;
 import dev.ikm.tinkar.entity.StampEntity;
 import dev.ikm.tinkar.entity.transform.TinkarSchemaToEntityTransformer;
 import dev.ikm.tinkar.terms.EntityFacade;
-import dev.ikm.tinkar.terms.TinkarTerm;
+import dev.ikm.tinkar.terms.KernelTerm;
 import org.eclipse.collections.api.block.procedure.primitive.IntProcedure;
 import org.eclipse.collections.api.factory.Lists;
 import org.eclipse.collections.api.factory.Maps;
@@ -54,7 +57,6 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
@@ -72,7 +74,7 @@ import java.util.function.ObjIntConsumer;
  * <p>Unlike {@code ProviderEphemeral}, this class has no search-indexing side effects in
  * {@link #merge} — search in gRPC mode is handled entirely by {@link GrpcSearchService}.
  */
-public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenerator, NoLocalUserStore {
+public class GrpcPrimitiveDataService implements PrimitiveDataService, EntityStore, NidGenerator, NoLocalUserStore {
 
     private static final Logger LOG = LoggerFactory.getLogger(GrpcPrimitiveDataService.class);
 
@@ -95,7 +97,6 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
     // Secondary indices (mirrors ProviderEphemeral)
     private final ConcurrentHashMap<Integer, Integer> nidToPatternNidMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, long[]> nidToCitingComponentsNidMap = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Integer, ConcurrentSkipListSet<Integer>> patternToElementNidsMap = new ConcurrentHashMap<>();
     final ConcurrentHashSet<Integer> patternNids  = new ConcurrentHashSet<>();
     final ConcurrentHashSet<Integer> conceptNids  = new ConcurrentHashSet<>();
     final ConcurrentHashSet<Integer> semanticNids = new ConcurrentHashSet<>();
@@ -105,6 +106,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
 
     private GrpcPrimitiveDataService() {
         LOG.info("Constructing GrpcPrimitiveDataService");
+        NidLayout.activate(NidLayout.SEQUENTIAL);
     }
 
     public static GrpcPrimitiveDataService provider() {
@@ -165,14 +167,31 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
                 .forEach(e -> action.accept(e.getValue(), e.getKey()));
     }
 
+    /**
+     * Visits the entity bytes of each nid, in parallel, reading each through {@link #getBytes},
+     * so an entity missing from the session store is fetched from the server; a nid with no
+     * entity anywhere is passed over (IKE-Network/ike-issues#1250).
+     */
     @Override
     public void forEachParallel(ImmutableIntList nids, ObjIntConsumer<byte[]> action) {
-        throw new UnsupportedOperationException();
+        nids.primitiveParallelStream().forEach(nid -> acceptBytes(nid, action));
     }
 
+    /**
+     * Visits the entity bytes of each nid, in order, reading each through {@link #getBytes}, so
+     * an entity missing from the session store is fetched from the server; a nid with no entity
+     * anywhere is passed over (IKE-Network/ike-issues#1250).
+     */
     @Override
     public void forEach(ImmutableIntList nids, ObjIntConsumer<byte[]> action) {
-        throw new UnsupportedOperationException();
+        nids.forEach(nid -> acceptBytes(nid, action));
+    }
+
+    private void acceptBytes(int nid, ObjIntConsumer<byte[]> action) {
+        byte[] bytes = getBytes(nid);
+        if (bytes != null) {
+            action.accept(bytes, nid);
+        }
     }
 
     /**
@@ -225,9 +244,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
 
         // Won the race — perform the gRPC call
         try {
-            dev.ikm.tinkar.schema.PublicId protoId = dev.ikm.tinkar.schema.PublicId.newBuilder()
-                    .addAllUuids(uuids.stream().map(UUID::toString).toList())
-                    .build();
+            dev.ikm.tinkar.schema.PublicId protoId = SchemaIds.toSchema(uuids.toArray(UUID[]::new));
             var response = GrpcSearchClient.get().getEntityByPublicId(protoId);
             if (!response.getSuccess() || response.getEntitiesList().isEmpty()) {
                 LOG.debug("gRPC fallback: entity not found on server for nid {}", nid);
@@ -274,7 +291,6 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
                 long citationLong = IntsInLong.ints2Long(nid, patternNid);
                 nidToCitingComponentsNidMap.merge(referencedComponentNid,
                         new long[]{citationLong}, PrimitiveDataService::mergeCitations);
-                patternToElementNidsMap.computeIfAbsent(nid, ignored -> new ConcurrentSkipListSet<>()).add(nid);
             }
             return patternNid;
         });
@@ -395,37 +411,37 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
 
         /**
          * The well-known concepts every {@code Coordinates.*} default factory (Logic, Language,
-         * Path/Stamp) resolves eagerly via {@code TinkarTerm.X.nid()}. In gRPC mode the local
+         * Path/Stamp) resolves eagerly via {@code KernelTerm.X.nid()}. In gRPC mode the local
          * entity store starts empty, so any of these can be read before its on-demand fetch
          * completes — prefetching them all once, here, closes that gap for the whole class of
          * "well-known concept not yet locally resolvable" crashes (e.g. ike-issues#851) rather
          * than patching each call site as it's discovered.
          */
         private static final List<EntityFacade> BOOTSTRAP_CONCEPTS = List.of(
-                TinkarTerm.DEFINITION_DESCRIPTION_TYPE,
-                TinkarTerm.DESCRIPTION_PATTERN,
-                TinkarTerm.DEVELOPMENT_PATH,
-                TinkarTerm.EL_PLUS_PLUS_INFERRED_AXIOMS_PATTERN,
-                TinkarTerm.EL_PLUS_PLUS_PROFILE,
-                TinkarTerm.EL_PLUS_PLUS_STATED_AXIOMS_PATTERN,
-                TinkarTerm.ENGLISH_LANGUAGE,
-                TinkarTerm.FULLY_QUALIFIED_NAME_DESCRIPTION_TYPE,
-                TinkarTerm.GB_DIALECT_PATTERN,
-                TinkarTerm.INFERRED_NAVIGATION_PATTERN,
-                TinkarTerm.LANGUAGE,
-                TinkarTerm.MASTER_PATH,
-                TinkarTerm.NAVIGATION_VERTEX,
-                TinkarTerm.PRIMORDIAL_PATH,
-                TinkarTerm.REGULAR_NAME_DESCRIPTION_TYPE,
-                TinkarTerm.SANDBOX_PATH,
-                TinkarTerm.SNOROCKET_CLASSIFIER,
-                TinkarTerm.SOLOR_CONCEPT_ASSEMBLAGE,
-                TinkarTerm.SOLOR_MODULE,
-                TinkarTerm.SOLOR_OVERLAY_MODULE,
-                TinkarTerm.SPANISH_LANGUAGE,
-                TinkarTerm.STATED_NAVIGATION_PATTERN,
-                TinkarTerm.USER,
-                TinkarTerm.US_DIALECT_PATTERN
+                KernelTerm.DEFINITION_DESCRIPTION_TYPE,
+                KernelTerm.DESCRIPTION_PATTERN,
+                KernelTerm.DEVELOPMENT_PATH,
+                KernelTerm.EL_PLUS_PLUS_INFERRED_AXIOMS_PATTERN,
+                KernelTerm.EL_PLUS_PLUS_PROFILE,
+                KernelTerm.EL_PLUS_PLUS_STATED_AXIOMS_PATTERN,
+                KernelTerm.ENGLISH_LANGUAGE,
+                KernelTerm.FULLY_QUALIFIED_NAME_DESCRIPTION_TYPE,
+                KernelTerm.GB_DIALECT_PATTERN,
+                KernelTerm.INFERRED_NAVIGATION_PATTERN,
+                KernelTerm.LANGUAGE,
+                KernelTerm.MASTER_PATH,
+                KernelTerm.NAVIGATION_VERTEX,
+                KernelTerm.PRIMORDIAL_PATH,
+                KernelTerm.REGULAR_NAME_DESCRIPTION_TYPE,
+                KernelTerm.SANDBOX_PATH,
+                KernelTerm.SNOROCKET_CLASSIFIER,
+                KernelTerm.SOLOR_CONCEPT_ASSEMBLAGE,
+                KernelTerm.SOLOR_MODULE,
+                KernelTerm.SOLOR_OVERLAY_MODULE,
+                KernelTerm.SPANISH_LANGUAGE,
+                KernelTerm.STATED_NAVIGATION_PATTERN,
+                KernelTerm.USER,
+                KernelTerm.US_DIALECT_PATTERN
         );
 
         private final Map<DataServiceProperty, String> properties = new LinkedHashMap<>();
