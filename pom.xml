@@ -257,6 +257,34 @@
             <version>13.0.0</version>
             <scope>provided</scope>
         </dependency>
+
+        <!-- The provider conformance suite (tinkar-core test-fixtures), run against this
+             provider, with the entity layer it serves. -->
+        <dependency>
+            <groupId>dev.ikm.tinkar</groupId>
+            <artifactId>test-fixtures</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.ikm.tinkar</groupId>
+            <artifactId>entity-provider</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.ikm.tinkar</groupId>
+            <artifactId>executor-provider</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.ikm.tinkar</groupId>
+            <artifactId>test-logging</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

@@ -57,7 +57,6 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
@@ -98,7 +97,6 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
     // Secondary indices (mirrors ProviderEphemeral)
     private final ConcurrentHashMap<Integer, Integer> nidToPatternNidMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, long[]> nidToCitingComponentsNidMap = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Integer, ConcurrentSkipListSet<Integer>> patternToElementNidsMap = new ConcurrentHashMap<>();
     final ConcurrentHashSet<Integer> patternNids  = new ConcurrentHashSet<>();
     final ConcurrentHashSet<Integer> conceptNids  = new ConcurrentHashSet<>();
     final ConcurrentHashSet<Integer> semanticNids = new ConcurrentHashSet<>();
@@ -169,14 +167,31 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
                 .forEach(e -> action.accept(e.getValue(), e.getKey()));
     }
 
+    /**
+     * Visits the entity bytes of each nid, in parallel, reading each through {@link #getBytes},
+     * so an entity missing from the session store is fetched from the server; a nid with no
+     * entity anywhere is passed over (IKE-Network/ike-issues#1250).
+     */
     @Override
     public void forEachParallel(ImmutableIntList nids, ObjIntConsumer<byte[]> action) {
-        throw new UnsupportedOperationException();
+        nids.primitiveParallelStream().forEach(nid -> acceptBytes(nid, action));
     }
 
+    /**
+     * Visits the entity bytes of each nid, in order, reading each through {@link #getBytes}, so
+     * an entity missing from the session store is fetched from the server; a nid with no entity
+     * anywhere is passed over (IKE-Network/ike-issues#1250).
+     */
     @Override
     public void forEach(ImmutableIntList nids, ObjIntConsumer<byte[]> action) {
-        throw new UnsupportedOperationException();
+        nids.forEach(nid -> acceptBytes(nid, action));
+    }
+
+    private void acceptBytes(int nid, ObjIntConsumer<byte[]> action) {
+        byte[] bytes = getBytes(nid);
+        if (bytes != null) {
+            action.accept(bytes, nid);
+        }
     }
 
     /**
@@ -276,7 +291,6 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
                 long citationLong = IntsInLong.ints2Long(nid, patternNid);
                 nidToCitingComponentsNidMap.merge(referencedComponentNid,
                         new long[]{citationLong}, PrimitiveDataService::mergeCitations);
-                patternToElementNidsMap.computeIfAbsent(nid, ignored -> new ConcurrentSkipListSet<>()).add(nid);
             }
             return patternNid;
         });
