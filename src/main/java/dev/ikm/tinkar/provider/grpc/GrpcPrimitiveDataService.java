@@ -15,6 +15,12 @@
  */
 package dev.ikm.tinkar.provider.grpc;
 
+import java.util.function.ObjLongConsumer;
+import org.eclipse.collections.api.block.procedure.primitive.LongProcedure;
+import org.eclipse.collections.api.list.primitive.ImmutableLongList;
+
+import dev.ikm.tinkar.common.id.Nid;
+import dev.ikm.tinkar.common.service.SequentialNids;
 import dev.ikm.tinkar.entity.changeset.SchemaIds;
 import dev.ikm.tinkar.common.service.internal.EntityStore;
 import dev.ikm.tinkar.common.id.PublicId;
@@ -102,7 +108,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
     final ConcurrentHashSet<Integer> semanticNids = new ConcurrentHashSet<>();
     final ConcurrentHashSet<Integer> stampNids    = new ConcurrentHashSet<>();
 
-    private final AtomicInteger nextNid = new AtomicInteger(PrimitiveDataService.FIRST_NID);
+    private final AtomicInteger nextNid = new AtomicInteger(SequentialNids.FIRST_NID);
 
     private GrpcPrimitiveDataService() {
         LOG.info("Constructing GrpcPrimitiveDataService");
@@ -133,15 +139,15 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
     }
 
     @Override
-    public int nidForUuids(UUID... uuids) {
-        int nid = PrimitiveDataService.nidForUuids(uuidNidMap, this, uuids);
+    public long nidForUuids(UUID... uuids) {
+        int nid = SequentialNids.nidForUuids(uuidNidMap, () -> Nid.narrowChecked(newNid()), uuids);
         nidToUuidsMap.putIfAbsent(nid, Arrays.asList(uuids));
         return nid;
     }
 
     @Override
-    public int nidForUuids(ImmutableList<UUID> uuidList) {
-        int nid = PrimitiveDataService.nidForUuids(uuidNidMap, this, uuidList);
+    public long nidForUuids(ImmutableList<UUID> uuidList) {
+        int nid = SequentialNids.nidForUuids(uuidNidMap, () -> Nid.narrowChecked(newNid()), uuidList);
         nidToUuidsMap.putIfAbsent(nid, uuidList.toList());
         return nid;
     }
@@ -157,12 +163,12 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
     }
 
     @Override
-    public void forEach(ObjIntConsumer<byte[]> action) {
+    public void forEach(ObjLongConsumer<byte[]> action) {
         nidComponentMap.forEach((nid, bytes) -> action.accept(bytes, nid));
     }
 
     @Override
-    public void forEachParallel(ObjIntConsumer<byte[]> action) {
+    public void forEachParallel(ObjLongConsumer<byte[]> action) {
         nidComponentMap.entrySet().parallelStream()
                 .forEach(e -> action.accept(e.getValue(), e.getKey()));
     }
@@ -173,8 +179,8 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
      * entity anywhere is passed over (IKE-Network/ike-issues#1250).
      */
     @Override
-    public void forEachParallel(ImmutableIntList nids, ObjIntConsumer<byte[]> action) {
-        nids.primitiveParallelStream().forEach(nid -> acceptBytes(nid, action));
+    public void forEachParallel(ImmutableLongList nids, ObjLongConsumer<byte[]> action) {
+        nids.primitiveParallelStream().forEach(nid -> acceptBytes(Nid.narrowChecked(nid), action));
     }
 
     /**
@@ -183,11 +189,11 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
      * anywhere is passed over (IKE-Network/ike-issues#1250).
      */
     @Override
-    public void forEach(ImmutableIntList nids, ObjIntConsumer<byte[]> action) {
-        nids.forEach(nid -> acceptBytes(nid, action));
+    public void forEach(ImmutableLongList nids, ObjLongConsumer<byte[]> action) {
+        nids.forEach(nid -> acceptBytes(Nid.narrowChecked(nid), action));
     }
 
-    private void acceptBytes(int nid, ObjIntConsumer<byte[]> action) {
+    private void acceptBytes(int nid, ObjLongConsumer<byte[]> action) {
         byte[] bytes = getBytes(nid);
         if (bytes != null) {
             action.accept(bytes, nid);
@@ -212,23 +218,23 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
      * dropped, leaving {@code nidComponentMap} empty and causing an infinite gRPC retry loop.
      */
     @Override
-    public byte[] getBytes(int nid) {
-        byte[] bytes = nidComponentMap.get(nid);
+    public byte[] getBytes(long nid) {
+        byte[] bytes = nidComponentMap.get(Nid.narrowChecked(nid));
         if (bytes != null) {
             return bytes;
         }
 
-        if (notFoundNids.contains(nid)) {
+        if (notFoundNids.contains(Nid.narrowChecked(nid))) {
             return null;
         }
 
-        List<UUID> uuids = nidToUuidsMap.get(nid);
+        List<UUID> uuids = nidToUuidsMap.get(Nid.narrowChecked(nid));
         if (uuids == null || uuids.isEmpty() || !GrpcSearchClient.isAvailable()) {
             return null;
         }
 
         CompletableFuture<byte[]> myFuture = new CompletableFuture<>();
-        CompletableFuture<byte[]> existing = inFlightFetches.putIfAbsent(nid, myFuture);
+        CompletableFuture<byte[]> existing = inFlightFetches.putIfAbsent(Nid.narrowChecked(nid), myFuture);
         if (existing != null) {
             // Another thread is already fetching this NID — wait for its result
             try {
@@ -248,7 +254,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
             var response = GrpcSearchClient.get().getEntityByPublicId(protoId);
             if (!response.getSuccess() || response.getEntitiesList().isEmpty()) {
                 LOG.debug("gRPC fallback: entity not found on server for nid {}", nid);
-                notFoundNids.add(nid);
+                notFoundNids.add(Nid.narrowChecked(nid));
                 myFuture.complete(null);
                 return null;
             }
@@ -267,10 +273,10 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
                                 stamp.getBytes(), stamp, DataActivity.SYNCHRONIZABLE_EDIT));
             }
 
-            byte[] result = nidComponentMap.get(nid);
+            byte[] result = nidComponentMap.get(Nid.narrowChecked(nid));
             if (result == null) {
                 LOG.warn("gRPC fallback: entity returned but not stored in nidComponentMap for nid {}", nid);
-                notFoundNids.add(nid);
+                notFoundNids.add(Nid.narrowChecked(nid));
             }
             myFuture.complete(result);
             return result;
@@ -279,33 +285,33 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
             myFuture.completeExceptionally(e);
             return null;
         } finally {
-            inFlightFetches.remove(nid);
+            inFlightFetches.remove(Nid.narrowChecked(nid));
         }
     }
 
     @Override
-    public byte[] merge(int nid, int patternNid, int referencedComponentNid,
+    public byte[] merge(long nid, long patternNid, long referencedComponentNid,
                         byte[] value, Object sourceObject, DataActivity activity) {
-        nidToPatternNidMap.computeIfAbsent(nid, k -> {
-            if (patternNid != Integer.MAX_VALUE) {
-                long citationLong = IntsInLong.ints2Long(nid, patternNid);
-                nidToCitingComponentsNidMap.merge(referencedComponentNid,
+        nidToPatternNidMap.computeIfAbsent(Nid.narrowChecked(nid), k -> {
+            if (!Nid.isNotApplicable(patternNid)) {
+                long citationLong = IntsInLong.ints2Long(Nid.narrowChecked(nid), Nid.narrowChecked(patternNid));
+                nidToCitingComponentsNidMap.merge(Nid.narrowChecked(referencedComponentNid),
                         new long[]{citationLong}, PrimitiveDataService::mergeCitations);
             }
-            return patternNid;
+            return Nid.narrowChecked(patternNid);
         });
 
         if (sourceObject instanceof ConceptEntity concept) {
-            conceptNids.add(concept.nid());
+            conceptNids.add(Nid.narrowChecked(concept.nid()));
         } else if (sourceObject instanceof SemanticEntity semanticEntity) {
-            semanticNids.add(semanticEntity.nid());
+            semanticNids.add(Nid.narrowChecked(semanticEntity.nid()));
         } else if (sourceObject instanceof PatternEntity patternEntity) {
-            patternNids.add(patternEntity.nid());
+            patternNids.add(Nid.narrowChecked(patternEntity.nid()));
         } else if (sourceObject instanceof StampEntity stampEntity) {
-            stampNids.add(stampEntity.nid());
+            stampNids.add(Nid.narrowChecked(stampEntity.nid()));
         }
 
-        byte[] mergedBytes = nidComponentMap.merge(nid, value, PrimitiveDataService::merge);
+        byte[] mergedBytes = nidComponentMap.merge(Nid.narrowChecked(nid), value, PrimitiveDataService::merge);
         writeSequence.increment();
         return mergedBytes;
     }
@@ -328,7 +334,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
     }
 
     @Override
-    public void forEachSemanticNidOfPattern(int patternNid, IntProcedure procedure) {
+    public void forEachSemanticNidOfPattern(long patternNid, LongProcedure procedure) {
         nidToPatternNidMap.forEach((nid, storedPatternNid) -> {
             if (patternNid == storedPatternNid) {
                 procedure.accept(nid);
@@ -337,28 +343,28 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
     }
 
     @Override
-    public void forEachPatternNid(IntProcedure procedure) {
+    public void forEachPatternNid(LongProcedure procedure) {
         patternNids.forEach(procedure::accept);
     }
 
     @Override
-    public void forEachConceptNid(IntProcedure procedure) {
+    public void forEachConceptNid(LongProcedure procedure) {
         conceptNids.forEach(procedure::accept);
     }
 
     @Override
-    public void forEachStampNid(IntProcedure procedure) {
+    public void forEachStampNid(LongProcedure procedure) {
         stampNids.forEach(procedure::accept);
     }
 
     @Override
-    public void forEachSemanticNid(IntProcedure procedure) {
+    public void forEachSemanticNid(LongProcedure procedure) {
         semanticNids.forEach(procedure::accept);
     }
 
     @Override
-    public void forEachSemanticNidForComponent(int componentNid, IntProcedure procedure) {
-        long[] citationLongs = nidToCitingComponentsNidMap.get(componentNid);
+    public void forEachSemanticNidForComponent(long componentNid, LongProcedure procedure) {
+        long[] citationLongs = nidToCitingComponentsNidMap.get(Nid.narrowChecked(componentNid));
         if (citationLongs != null) {
             for (long citationLong : citationLongs) {
                 procedure.accept((int) (citationLong >> 32));
@@ -367,9 +373,9 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
     }
 
     @Override
-    public void forEachSemanticNidForComponentOfPattern(int componentNid, int patternNid,
-                                                        IntProcedure procedure) {
-        long[] citationLongs = nidToCitingComponentsNidMap.get(componentNid);
+    public void forEachSemanticNidForComponentOfPattern(long componentNid, long patternNid,
+                                                        LongProcedure procedure) {
+        long[] citationLongs = nidToCitingComponentsNidMap.get(Nid.narrowChecked(componentNid));
         if (citationLongs != null) {
             for (long citationLong : citationLongs) {
                 int citingNid        = (int) (citationLong >> 32);
@@ -389,7 +395,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
     // ── NidGenerator ────────────────────────────────────────────────
 
     @Override
-    public int newNid() {
+    public long newNid() {
         return nextNid.getAndIncrement();
     }
 

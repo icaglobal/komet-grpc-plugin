@@ -128,13 +128,13 @@ public class GrpcCommitForwarder implements ServiceLifecycle {
 
             // Stamps first, matching the order the server stores them in: an entity version
             // cites its stamp, so the stamp has to be resolvable before that entity is read.
-            for (int stampNid : notification.stampNids()) {
+            for (long stampNid : notification.stampNids()) {
                 StampEntity<?> stamp = EntityService.get().getStampFast(stampNid);
                 if (stamp != null) {
                     messages.add(transformer.transform(stamp));
                 }
             }
-            for (int componentNid : notification.componentNids()) {
+            for (long componentNid : notification.componentNids()) {
                 Entity<?> entity = EntityHandle.get(componentNid).orNull();
                 if (entity != null) {
                     messages.add(transformer.transform(entity));

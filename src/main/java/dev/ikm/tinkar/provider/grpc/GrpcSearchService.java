@@ -168,7 +168,7 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
      * @throws StatusRuntimeException   if the server call fails (e.g. UNIMPLEMENTED)
      */
     @Override
-    public int loadConceptWithSemantics(List<UUID> publicIds) {
+    public long loadConceptWithSemantics(List<UUID> publicIds) {
         if (!isActive()) {
             throw new IllegalStateException("GrpcSearchService not initialized");
         }
