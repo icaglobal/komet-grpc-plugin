@@ -155,7 +155,7 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
     /**
      * Fetches the full entity graph for a concept from the gRPC service and loads it into
      * the local entity store (ephemeral provider in gRPC mode).  After this call returns,
-     * {@code Entity.get(nid)} will find the concept and all its semantics, patterns, and
+     * {@code EntityHandle.get(nid)} will find the concept and all its semantics, patterns, and
      * stamps.
      *
      * <p>The server is expected to implement {@code LoadConceptEntityGraph} and return
