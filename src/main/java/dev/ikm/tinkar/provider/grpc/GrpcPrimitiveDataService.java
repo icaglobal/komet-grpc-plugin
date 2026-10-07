@@ -18,6 +18,7 @@ package dev.ikm.tinkar.provider.grpc;
 import dev.ikm.tinkar.entity.changeset.SchemaIds;
 import dev.ikm.tinkar.common.service.internal.EntityStore;
 import dev.ikm.tinkar.common.id.PublicId;
+import dev.ikm.tinkar.common.id.impl.NidLayout;
 import dev.ikm.tinkar.common.service.DataActivity;
 import dev.ikm.tinkar.common.service.DataServiceController;
 import dev.ikm.tinkar.common.service.DataServiceProperty;
@@ -107,6 +108,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
 
     private GrpcPrimitiveDataService() {
         LOG.info("Constructing GrpcPrimitiveDataService");
+        NidLayout.activate(NidLayout.SEQUENTIAL);
     }
 
     public static GrpcPrimitiveDataService provider() {
