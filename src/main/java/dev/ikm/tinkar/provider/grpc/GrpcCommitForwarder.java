@@ -20,6 +20,7 @@ import dev.ikm.tinkar.common.service.ServiceLifecycle;
 import dev.ikm.tinkar.common.service.ServiceLifecyclePhase;
 import dev.ikm.tinkar.common.util.broadcast.CommitBroadcaster;
 import dev.ikm.tinkar.entity.Entity;
+import dev.ikm.tinkar.entity.EntityHandle;
 import dev.ikm.tinkar.entity.EntityService;
 import dev.ikm.tinkar.entity.StampEntity;
 import dev.ikm.tinkar.entity.transform.EntityToTinkarSchemaTransformer;
@@ -127,14 +128,14 @@ public class GrpcCommitForwarder implements ServiceLifecycle {
 
             // Stamps first, matching the order the server stores them in: an entity version
             // cites its stamp, so the stamp has to be resolvable before that entity is read.
-            for (int stampNid : notification.stampNids()) {
+            for (long stampNid : notification.stampNids()) {
                 StampEntity<?> stamp = EntityService.get().getStampFast(stampNid);
                 if (stamp != null) {
                     messages.add(transformer.transform(stamp));
                 }
             }
-            for (int componentNid : notification.componentNids()) {
-                Entity<?> entity = EntityService.get().getEntityFast(componentNid);
+            for (long componentNid : notification.componentNids()) {
+                Entity<?> entity = EntityHandle.get(componentNid).orNull();
                 if (entity != null) {
                     messages.add(transformer.transform(entity));
                 }
