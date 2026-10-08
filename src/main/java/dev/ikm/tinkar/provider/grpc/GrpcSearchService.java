@@ -15,6 +15,10 @@
  */
 package dev.ikm.tinkar.provider.grpc;
 
+import java.io.File;
+import dev.ikm.tinkar.common.service.TrackingCallable;
+import dev.ikm.tinkar.common.service.EntityCountSummary;
+import dev.ikm.tinkar.common.service.RemoteChangesetService;
 import dev.ikm.tinkar.common.service.PrimitiveDataSearchResult;
 import dev.ikm.tinkar.common.service.ProviderController;
 import dev.ikm.tinkar.common.service.RemoteConceptSearchService;
@@ -57,7 +61,7 @@ import java.util.concurrent.CompletableFuture;
  * an empty array — all meaningful results come through the typed methods that carry
  * grouped/semantic structure back from the service.
  */
-public class GrpcSearchService implements SearchService, RemoteConceptSearchService,
+public class GrpcSearchService implements SearchService, RemoteConceptSearchService, RemoteChangesetService,
         RemoteReasonerService {
 
     private static final Logger LOG = LoggerFactory.getLogger(GrpcSearchService.class);
@@ -281,6 +285,26 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
      * only triggers it and reports what came back. In gRPC mode the local entity store is
      * ephemeral, so there is nothing here for a local reasoner to run against.
      */
+    @Override
+    public EntityCountSummary importChangeset(File changeset, RemoteChangesetService.ProgressListener listener,
+                                              TrackingCallable<?> tracker) {
+        return GrpcChangesetClient.importChangeset(changeset, listener, tracker);
+    }
+
+    @Override
+    public EntityCountSummary exportChangeSet(File target, long fromEpochMillis, long toEpochMillis,
+                                              RemoteChangesetService.ProgressListener listener,
+                                              TrackingCallable<?> tracker) {
+        return GrpcChangesetClient.exportChangeSet(target, fromEpochMillis, toEpochMillis, listener, tracker);
+    }
+
+    @Override
+    public EntityCountSummary exportMembership(File target, List<dev.ikm.tinkar.common.id.PublicId> membershipTags,
+                                               RemoteChangesetService.ProgressListener listener,
+                                               TrackingCallable<?> tracker) {
+        return GrpcChangesetClient.exportMembership(target, membershipTags, listener, tracker);
+    }
+
     @Override
     public RemoteReasonerOutcome runFullReasoner(PhaseListener listener) {
         return runFullReasoner(listener, null);

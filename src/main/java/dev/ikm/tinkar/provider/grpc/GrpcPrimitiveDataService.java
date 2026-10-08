@@ -29,6 +29,7 @@ import dev.ikm.tinkar.common.service.ServiceExclusionGroup;
 import dev.ikm.tinkar.common.service.ServiceLifecyclePhase;
 import dev.ikm.tinkar.common.sets.ConcurrentHashSet;
 import dev.ikm.tinkar.common.util.ints2long.IntsInLong;
+import dev.ikm.tinkar.entity.EntityService;
 import dev.ikm.tinkar.entity.ConceptEntity;
 import dev.ikm.tinkar.entity.PatternEntity;
 import dev.ikm.tinkar.entity.SemanticEntity;
@@ -87,6 +88,9 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
 
     // NIDs for which the server returned no entity — skip future gRPC retries (negative cache)
     private final ConcurrentHashSet<Integer> notFoundNids = new ConcurrentHashSet<>();
+
+    // NIDs whose descriptions and navigation semantics have been asked of the server
+    private final ConcurrentHashSet<Integer> semanticsFetched = new ConcurrentHashSet<>();
 
     // UUID ↔ NID bidirectional mapping
     private final ConcurrentHashMap<UUID, Integer> uuidNidMap = new ConcurrentHashMap<>();
@@ -192,6 +196,60 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
      * a {@code cache.put()} for the same key from within that loader can be silently
      * dropped, leaving {@code nidComponentMap} empty and causing an infinite gRPC retry loop.
      */
+    /**
+     * Replaces this store's copies of {@code components} with the server's current ones.
+     *
+     * <p>For after a change made on the server rather than through this client — a changeset import.
+     * This store fetches an entity only when it does not hold it, so a component it already holds
+     * would otherwise keep showing its old versions until Komet restarts. Components it has never
+     * held are skipped: they will be fetched, current, when first needed. Ones it looked for and did
+     * not find are forgotten as not-found, since the import may have just created them.
+     *
+     * <p>Goes through the entity service, so caches are invalidated and open views are told.
+     *
+     * @return how many components were refreshed
+     */
+    public int refreshFromServer(Iterable<List<UUID>> components) {
+        if (!GrpcSearchClient.isAvailable()) {
+            return 0;
+        }
+        TinkarSchemaToEntityTransformer transformer = TinkarSchemaToEntityTransformer.getInstance();
+        int refreshed = 0;
+        for (List<UUID> uuids : components) {
+            Integer nid = null;
+            for (UUID uuid : uuids) {
+                nid = uuidNidMap.get(uuid);
+                if (nid != null) {
+                    break;
+                }
+            }
+            if (nid == null) {
+                continue;
+            }
+            notFoundNids.remove(nid);
+            if (!nidComponentMap.containsKey(nid)) {
+                continue;
+            }
+            try {
+                var response = GrpcSearchClient.get().getEntityByPublicId(dev.ikm.tinkar.schema.PublicId.newBuilder()
+                        .addAllUuids(uuids.stream().map(UUID::toString).toList()).build());
+                if (!response.getSuccess()) {
+                    continue;
+                }
+                for (dev.ikm.tinkar.schema.TinkarMsg msg : response.getEntitiesList()) {
+                    transformer.transform(msg,
+                            entity -> EntityService.get().putEntity(entity, DataActivity.LOADING_CHANGE_SET),
+                            stamp -> EntityService.get().putEntity(stamp, DataActivity.LOADING_CHANGE_SET));
+                }
+                refreshed++;
+            } catch (RuntimeException e) {
+                LOG.warn("Could not refresh {} from the server: {}", uuids, e.getMessage());
+            }
+        }
+        LOG.info("Refreshed {} locally held component(s) from the server", refreshed);
+        return refreshed;
+    }
+
     @Override
     public byte[] getBytes(int nid) {
         byte[] bytes = nidComponentMap.get(nid);
@@ -225,29 +283,11 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
 
         // Won the race — perform the gRPC call
         try {
-            dev.ikm.tinkar.schema.PublicId protoId = dev.ikm.tinkar.schema.PublicId.newBuilder()
-                    .addAllUuids(uuids.stream().map(UUID::toString).toList())
-                    .build();
-            var response = GrpcSearchClient.get().getEntityByPublicId(protoId);
-            if (!response.getSuccess() || response.getEntitiesList().isEmpty()) {
+            if (!fetchFromServer(nid, uuids)) {
                 LOG.debug("gRPC fallback: entity not found on server for nid {}", nid);
                 notFoundNids.add(nid);
                 myFuture.complete(null);
                 return null;
-            }
-
-            // Store bytes directly into nidComponentMap via merge() to avoid a Caffeine
-            // re-entrance issue: calling EntityService.putEntity() from within a Caffeine
-            // get(key, loader) for the same key may silently drop the put.
-            TinkarSchemaToEntityTransformer transformer = TinkarSchemaToEntityTransformer.getInstance();
-            for (dev.ikm.tinkar.schema.TinkarMsg msg : response.getEntitiesList()) {
-                transformer.transform(msg,
-                        entity -> merge(entity.nid(),
-                                entity instanceof SemanticEntity<?> se ? se.patternNid() : Integer.MAX_VALUE,
-                                entity instanceof SemanticEntity<?> se ? se.referencedComponentNid() : Integer.MAX_VALUE,
-                                entity.getBytes(), entity, DataActivity.SYNCHRONIZABLE_EDIT),
-                        stamp  -> merge(stamp.nid(), Integer.MAX_VALUE, Integer.MAX_VALUE,
-                                stamp.getBytes(), stamp, DataActivity.SYNCHRONIZABLE_EDIT));
             }
 
             byte[] result = nidComponentMap.get(nid);
@@ -263,6 +303,67 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
             return null;
         } finally {
             inFlightFetches.remove(nid);
+        }
+    }
+
+    /**
+     * Fetches the entity with the given UUIDs — with its descriptions, navigation semantics and
+     * stamps — and stores all of it here.
+     *
+     * @return false when the server does not have it
+     */
+    private boolean fetchFromServer(int nid, List<UUID> uuids) {
+        semanticsFetched.add(nid);
+        dev.ikm.tinkar.schema.PublicId protoId = dev.ikm.tinkar.schema.PublicId.newBuilder()
+                .addAllUuids(uuids.stream().map(UUID::toString).toList())
+                .build();
+        var response = GrpcSearchClient.get().getEntityByPublicId(protoId);
+        if (!response.getSuccess() || response.getEntitiesList().isEmpty()) {
+            return false;
+        }
+
+        // Store bytes directly into nidComponentMap via merge() to avoid a Caffeine
+        // re-entrance issue: calling EntityService.putEntity() from within a Caffeine
+        // get(key, loader) for the same key may silently drop the put.
+        TinkarSchemaToEntityTransformer transformer = TinkarSchemaToEntityTransformer.getInstance();
+        for (dev.ikm.tinkar.schema.TinkarMsg msg : response.getEntitiesList()) {
+            transformer.transform(msg,
+                    entity -> merge(entity.nid(),
+                            entity instanceof SemanticEntity<?> se ? se.patternNid() : Integer.MAX_VALUE,
+                            entity instanceof SemanticEntity<?> se ? se.referencedComponentNid() : Integer.MAX_VALUE,
+                            entity.getBytes(), entity, DataActivity.SYNCHRONIZABLE_EDIT),
+                    stamp  -> merge(stamp.nid(), Integer.MAX_VALUE, Integer.MAX_VALUE,
+                            stamp.getBytes(), stamp, DataActivity.SYNCHRONIZABLE_EDIT));
+        }
+        return true;
+    }
+
+    /**
+     * Fetches a component known only by its UUIDs before its semantics are looked up, once.
+     *
+     * <p>A concept reached through another one — a child named in a navigation semantic, say —
+     * arrives here as a nid and UUIDs and nothing else. Looking up its semantics finds none, so
+     * the navigator would show it with no name and no children. Components this store already
+     * holds are left alone: the ones loaded with their semantics have them, and semantics and
+     * stamps are not looked up this way.
+     */
+    private void fetchSemanticsIfUnseen(int componentNid) {
+        if (semanticsFetched.contains(componentNid)
+                || semanticNids.contains(componentNid)
+                || stampNids.contains(componentNid)
+                || nidToCitingComponentsNidMap.containsKey(componentNid)
+                || notFoundNids.contains(componentNid)
+                || !GrpcSearchClient.isAvailable()) {
+            return;
+        }
+        List<UUID> uuids = nidToUuidsMap.get(componentNid);
+        if (uuids == null || uuids.isEmpty()) {
+            return;
+        }
+        try {
+            fetchFromServer(componentNid, uuids);
+        } catch (Exception e) {
+            LOG.warn("Failed to fetch the semantics of nid {}: {}", componentNid, e.getMessage());
         }
     }
 
@@ -342,6 +443,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
 
     @Override
     public void forEachSemanticNidForComponent(int componentNid, IntProcedure procedure) {
+        fetchSemanticsIfUnseen(componentNid);
         long[] citationLongs = nidToCitingComponentsNidMap.get(componentNid);
         if (citationLongs != null) {
             for (long citationLong : citationLongs) {
@@ -353,6 +455,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, NidGenera
     @Override
     public void forEachSemanticNidForComponentOfPattern(int componentNid, int patternNid,
                                                         IntProcedure procedure) {
+        fetchSemanticsIfUnseen(componentNid);
         long[] citationLongs = nidToCitingComponentsNidMap.get(componentNid);
         if (citationLongs != null) {
             for (long citationLong : citationLongs) {
