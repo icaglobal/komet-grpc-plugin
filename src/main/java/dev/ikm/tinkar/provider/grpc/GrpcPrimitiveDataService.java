@@ -71,13 +71,13 @@ import java.util.function.ObjIntConsumer;
 /**
  * Purpose-built {@link PrimitiveDataService} implementation for gRPC mode.
  *
- * <p>Replaces {@code ProviderEphemeral} in gRPC deployments. Entities are loaded into this
+ * <p>Replaces the in-memory store in gRPC deployments. Entities are loaded into this
  * in-memory store by {@link GrpcSearchService#loadConceptWithSemantics} (via the
  * {@code LoadConceptEntityGraph} batch call). If an entity is requested that was not
  * prefetched, {@link #getBytes} falls back to a single-entity gRPC call
  * ({@code GetEntityByPublicId}) using the reverse NID→UUID map maintained here.
  *
- * <p>Unlike {@code ProviderEphemeral}, this class has no search-indexing side effects in
+ * <p>Unlike the spined array's ephemeral mode, this class has no search-indexing side effects in
  * {@link #merge} — search in gRPC mode is handled entirely by {@link GrpcSearchService}.
  */
 public class GrpcPrimitiveDataService implements PrimitiveDataService, EntityStore, NidGenerator, NoLocalUserStore {
@@ -100,7 +100,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
     private final ConcurrentHashMap<UUID, Integer> uuidNidMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, List<UUID>> nidToUuidsMap = new ConcurrentHashMap<>();
 
-    // Secondary indices (mirrors ProviderEphemeral)
+    // Secondary indices (mirrors the spined array's)
     private final ConcurrentHashMap<Integer, Integer> nidToPatternNidMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, long[]> nidToCitingComponentsNidMap = new ConcurrentHashMap<>();
     final ConcurrentHashSet<Integer> patternNids  = new ConcurrentHashSet<>();
