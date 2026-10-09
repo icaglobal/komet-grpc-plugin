@@ -168,6 +168,26 @@ public final class GrpcChangesetClient {
             return;
         }
         java.util.List<java.util.List<java.util.UUID>> components = new java.util.ArrayList<>();
+        // A format-3 change set lists its components in a table; its records hold references as
+        // sequences into that table and are compressed per entry, so they are not read here. The
+        // table names somewhat more than the records written, which only costs a few lookups:
+        // refreshFromServer re-fetches only what this store already holds. Components marked
+        // referenced-only are skipped, since the import wrote nothing for them.
+        try (java.util.zip.ZipFile zipFile = new java.util.zip.ZipFile(changeset)) {
+            if (dev.ikm.tinkar.entity.changeset.ChangeSetFormat.hasComponentTable(zipFile)) {
+                dev.ikm.tinkar.entity.changeset.ComponentTable.forEach(zipFile, component -> {
+                    if (!component.referencedOnly()) {
+                        components.add(java.util.List.of(component.uuids()));
+                    }
+                });
+                store.refreshFromServer(components);
+                return;
+            }
+        } catch (IOException | RuntimeException e) {
+            LOG.warn("Imported, but could not read {} to refresh local copies: {}", changeset, e.toString());
+            return;
+        }
+        // An older change set: one stream of records, each carrying its own public id.
         try (java.util.zip.ZipInputStream zip = new java.util.zip.ZipInputStream(
                 new BufferedInputStream(new FileInputStream(changeset)))) {
             java.util.zip.ZipEntry entry;
