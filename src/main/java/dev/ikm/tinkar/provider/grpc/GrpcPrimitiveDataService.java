@@ -15,6 +15,7 @@
  */
 package dev.ikm.tinkar.provider.grpc;
 
+import java.util.function.BinaryOperator;
 import java.util.function.ObjLongConsumer;
 import org.eclipse.collections.api.block.procedure.primitive.LongProcedure;
 import org.eclipse.collections.api.list.primitive.ImmutableLongList;
@@ -38,6 +39,7 @@ import dev.ikm.tinkar.common.service.ServiceExclusionGroup;
 import dev.ikm.tinkar.common.service.ServiceLifecyclePhase;
 import dev.ikm.tinkar.common.sets.ConcurrentHashSet;
 import dev.ikm.tinkar.common.util.ints2long.IntsInLong;
+import dev.ikm.tinkar.entity.EntityRecordFactory;
 import dev.ikm.tinkar.entity.EntityService;
 import dev.ikm.tinkar.entity.ConceptEntity;
 import dev.ikm.tinkar.entity.PatternEntity;
@@ -393,6 +395,21 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
     @Override
     public byte[] merge(long nid, long patternNid, long referencedComponentNid,
                         byte[] value, Object sourceObject, DataActivity activity) {
+        return merge(nid, patternNid, referencedComponentNid, value, sourceObject, PrimitiveDataService::merge);
+    }
+
+    @Override
+    public byte[] mergeReplacingVersion(long nid, long patternNid, long referencedComponentNid, long withdrawnStampNid,
+                                        byte[] value, Object sourceObject, DataActivity activity) {
+        // As in the spined array: the version leaves the cached record inside the same atomic
+        // map merge that merges the value in, so no reader sees the record with neither.
+        return merge(nid, patternNid, referencedComponentNid, value, sourceObject,
+                (stored, incoming) -> PrimitiveDataService.merge(
+                        EntityRecordFactory.withoutVersion(stored, withdrawnStampNid), incoming));
+    }
+
+    private byte[] merge(long nid, long patternNid, long referencedComponentNid, byte[] value, Object sourceObject,
+                         BinaryOperator<byte[]> accumulator) {
         nidToPatternNidMap.computeIfAbsent(Nid.narrowChecked(nid), k -> {
             if (!Nid.isNotApplicable(patternNid)) {
                 long citationLong = IntsInLong.ints2Long(Nid.narrowChecked(nid), Nid.narrowChecked(patternNid));
@@ -412,7 +429,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
             stampNids.add(Nid.narrowChecked(stampEntity.nid()));
         }
 
-        byte[] mergedBytes = nidComponentMap.merge(Nid.narrowChecked(nid), value, PrimitiveDataService::merge);
+        byte[] mergedBytes = nidComponentMap.merge(Nid.narrowChecked(nid), value, accumulator);
         writeSequence.increment();
         return mergedBytes;
     }
