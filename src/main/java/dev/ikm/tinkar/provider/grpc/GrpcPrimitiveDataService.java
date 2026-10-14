@@ -47,7 +47,8 @@ import dev.ikm.tinkar.entity.SemanticEntity;
 import dev.ikm.tinkar.entity.StampEntity;
 import dev.ikm.tinkar.entity.transform.TinkarSchemaToEntityTransformer;
 import dev.ikm.tinkar.terms.EntityFacade;
-import dev.ikm.tinkar.terms.KernelTerm;
+import dev.ikm.tinkar.terms.KernelConcept;
+import dev.ikm.tinkar.terms.KernelPattern;
 import org.eclipse.collections.api.block.procedure.primitive.IntProcedure;
 import org.eclipse.collections.api.factory.Lists;
 import org.eclipse.collections.api.factory.Maps;
@@ -537,37 +538,37 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
 
         /**
          * The well-known concepts every {@code Coordinates.*} default factory (Logic, Language,
-         * Path/Stamp) resolves eagerly via {@code KernelTerm.X.nid()}. In gRPC mode the local
+         * Path/Stamp) resolves eagerly via {@code KernelConcept.X.nid()}. In gRPC mode the local
          * entity store starts empty, so any of these can be read before its on-demand fetch
          * completes — prefetching them all once, here, closes that gap for the whole class of
          * "well-known concept not yet locally resolvable" crashes (e.g. ike-issues#851) rather
          * than patching each call site as it's discovered.
          */
         private static final List<EntityFacade> BOOTSTRAP_CONCEPTS = List.of(
-                KernelTerm.DEFINITION_DESCRIPTION_TYPE,
-                KernelTerm.DESCRIPTION_PATTERN,
-                KernelTerm.DEVELOPMENT_PATH,
-                KernelTerm.EL_PLUS_PLUS_INFERRED_AXIOMS_PATTERN,
-                KernelTerm.EL_PLUS_PLUS_PROFILE,
-                KernelTerm.EL_PLUS_PLUS_STATED_AXIOMS_PATTERN,
-                KernelTerm.ENGLISH_LANGUAGE,
-                KernelTerm.FULLY_QUALIFIED_NAME_DESCRIPTION_TYPE,
-                KernelTerm.GB_DIALECT_PATTERN,
-                KernelTerm.INFERRED_NAVIGATION_PATTERN,
-                KernelTerm.LANGUAGE,
-                KernelTerm.MASTER_PATH,
-                KernelTerm.NAVIGATION_VERTEX,
-                KernelTerm.PRIMORDIAL_PATH,
-                KernelTerm.REGULAR_NAME_DESCRIPTION_TYPE,
-                KernelTerm.SANDBOX_PATH,
-                KernelTerm.SNOROCKET_CLASSIFIER,
-                KernelTerm.SOLOR_CONCEPT_ASSEMBLAGE,
-                KernelTerm.SOLOR_MODULE,
-                KernelTerm.SOLOR_OVERLAY_MODULE,
-                KernelTerm.SPANISH_LANGUAGE,
-                KernelTerm.STATED_NAVIGATION_PATTERN,
-                KernelTerm.USER,
-                KernelTerm.US_DIALECT_PATTERN
+                KernelConcept.DEFINITION_DESCRIPTION_TYPE,
+                KernelPattern.DESCRIPTION_PATTERN,
+                KernelConcept.DEVELOPMENT_PATH,
+                KernelPattern.EL_PLUS_PLUS_INFERRED_AXIOMS_PATTERN,
+                KernelConcept.EL_PLUS_PLUS_PROFILE,
+                KernelPattern.EL_PLUS_PLUS_STATED_AXIOMS_PATTERN,
+                KernelConcept.ENGLISH_LANGUAGE,
+                KernelConcept.FULLY_QUALIFIED_NAME_DESCRIPTION_TYPE,
+                KernelPattern.GB_DIALECT_PATTERN,
+                KernelPattern.INFERRED_NAVIGATION_PATTERN,
+                KernelConcept.LANGUAGE,
+                KernelConcept.MASTER_PATH,
+                KernelConcept.NAVIGATION_VERTEX,
+                KernelConcept.PRIMORDIAL_PATH,
+                KernelConcept.REGULAR_NAME_DESCRIPTION_TYPE,
+                KernelConcept.SANDBOX_PATH,
+                KernelConcept.SNOROCKET_CLASSIFIER,
+                KernelPattern.SOLOR_CONCEPT_ASSEMBLAGE,
+                KernelConcept.SOLOR_MODULE,
+                KernelConcept.SOLOR_OVERLAY_MODULE,
+                KernelConcept.SPANISH_LANGUAGE,
+                KernelPattern.STATED_NAVIGATION_PATTERN,
+                KernelConcept.USER,
+                KernelPattern.US_DIALECT_PATTERN
         );
 
         private final Map<DataServiceProperty, String> properties = new LinkedHashMap<>();
