@@ -28,6 +28,10 @@ import dev.ikm.tinkar.service.proto.TinkarConceptSemanticsResponse;
 import dev.ikm.tinkar.service.proto.IkeGraphRAGGrpc;
 import dev.ikm.tinkar.service.proto.IkeKnowledgeGraphGrpc;
 import dev.ikm.tinkar.service.proto.KnowledgeGraphConceptRequest;
+import dev.ikm.tinkar.service.proto.ListPatternMembersRequest;
+import dev.ikm.tinkar.service.proto.ListPatternMembersResponse;
+import dev.ikm.tinkar.service.proto.ListPatternsRequest;
+import dev.ikm.tinkar.service.proto.ListPatternsResponse;
 import dev.ikm.tinkar.service.proto.TinkarSemanticInfoResponse;
 import io.grpc.ManagedChannel;
 import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
@@ -270,6 +274,34 @@ public class GrpcSearchClient implements AutoCloseable {
                 .setPublicId(publicId)
                 .build();
         return knowledgeGraphStub.getSemanticInfo(request);
+    }
+
+    /**
+     * Calls {@code IkeKnowledgeGraph.ListPatterns}: every pattern in the remote store, with its
+     * descriptions and stamps.
+     */
+    public ListPatternsResponse listPatterns() {
+        return knowledgeGraphStub.listPatterns(ListPatternsRequest.getDefaultInstance());
+    }
+
+    /**
+     * Calls {@code IkeKnowledgeGraph.ListPatternMembers}: one page of a pattern's members and the
+     * pattern's total member count.
+     *
+     * @param pattern the pattern's public id
+     * @param offset  how many matching members to skip
+     * @param limit   how many to return; the server caps it
+     * @param text    optional: only members whose referenced component's description contains this
+     */
+    public ListPatternMembersResponse listPatternMembers(PublicId pattern, int offset, int limit, String text) {
+        ListPatternMembersRequest.Builder request = ListPatternMembersRequest.newBuilder()
+                .setPatternId(pattern)
+                .setOffset(offset)
+                .setLimit(limit);
+        if (text != null && !text.isBlank()) {
+            request.setReferencedComponentText(text);
+        }
+        return knowledgeGraphStub.listPatternMembers(request.build());
     }
 
     /**

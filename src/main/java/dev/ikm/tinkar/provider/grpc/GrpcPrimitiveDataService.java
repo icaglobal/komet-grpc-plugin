@@ -238,6 +238,8 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
         if (!GrpcSearchClient.isAvailable()) {
             return 0;
         }
+        // An import may have brought new patterns: list them again when next asked.
+        patternsListed = false;
         TinkarSchemaToEntityTransformer transformer = TinkarSchemaToEntityTransformer.getInstance();
         int refreshed = 0;
         for (List<UUID> uuids : components) {
@@ -345,11 +347,18 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
             return false;
         }
 
-        // Store bytes directly into nidComponentMap via merge() to avoid a Caffeine
-        // re-entrance issue: calling EntityService.putEntity() from within a Caffeine
-        // get(key, loader) for the same key may silently drop the put.
+        store(response.getEntitiesList());
+        return true;
+    }
+
+    /**
+     * Stores entities the server sent. Bytes go straight into nidComponentMap via merge() to avoid
+     * a Caffeine re-entrance issue: calling EntityService.putEntity() from within a Caffeine
+     * get(key, loader) for the same key may silently drop the put.
+     */
+    private void store(List<dev.ikm.tinkar.schema.TinkarMsg> messages) {
         TinkarSchemaToEntityTransformer transformer = TinkarSchemaToEntityTransformer.getInstance();
-        for (dev.ikm.tinkar.schema.TinkarMsg msg : response.getEntitiesList()) {
+        for (dev.ikm.tinkar.schema.TinkarMsg msg : messages) {
             transformer.transform(msg,
                     entity -> merge(entity.nid(),
                             entity instanceof SemanticEntity<?> se ? se.patternNid() : Integer.MAX_VALUE,
@@ -358,7 +367,6 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
                     stamp  -> merge(stamp.nid(), Integer.MAX_VALUE, Integer.MAX_VALUE,
                             stamp.getBytes(), stamp, DataActivity.SYNCHRONIZABLE_EDIT));
         }
-        return true;
     }
 
     /**
@@ -445,7 +453,118 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
 
     @Override
     public void forEachPatternNid(LongProcedure procedure) {
+        listPatternsFromServer();
         patternNids.forEach(procedure::accept);
+    }
+
+    /** Whether every pattern of the server's store has been loaded here. */
+    private volatile boolean patternsListed;
+
+    /**
+     * Loads every pattern of the server's store, once: this store holds only what it has fetched,
+     * so listing patterns from it alone shows a handful. Reset by {@link #refreshFromServer}, after
+     * an import may have added patterns.
+     */
+    private void listPatternsFromServer() {
+        if (patternsListed || !GrpcSearchClient.isAvailable()) {
+            return;
+        }
+        synchronized (this) {
+            if (patternsListed) {
+                return;
+            }
+            try {
+                var response = GrpcSearchClient.get().listPatterns();
+                if (response.getSuccess()) {
+                    store(response.getEntitiesList());
+                    patternsListed = true;
+                    LOG.info("Loaded {} patterns from the server", response.getPatternCount());
+                } else {
+                    LOG.warn("Could not list the server's patterns: {}", response.getErrorMessage());
+                }
+            } catch (RuntimeException e) {
+                LOG.warn("Could not list the server's patterns: {}", e.getMessage());
+            }
+        }
+    }
+
+    /** Most members one ListPatternMembers call returns; larger pages take several calls. */
+    private static final int MEMBERS_PER_CALL = 1000;
+
+    @Override
+    public int countSemanticsOfPattern(long patternNid) {
+        dev.ikm.tinkar.schema.PublicId pattern = schemaIdOf(patternNid);
+        if (pattern == null || !GrpcSearchClient.isAvailable()) {
+            return EntityStore.super.countSemanticsOfPattern(patternNid);
+        }
+        try {
+            var response = GrpcSearchClient.get().listPatternMembers(pattern, 0, 1, null);
+            if (response.getSuccess()) {
+                store(response.getEntitiesList());
+                return (int) Math.min(Integer.MAX_VALUE, response.getTotalCount());
+            }
+            LOG.warn("Could not count the members of pattern nid {}: {}", patternNid, response.getErrorMessage());
+        } catch (RuntimeException e) {
+            LOG.warn("Could not count the members of pattern nid {}: {}", patternNid, e.getMessage());
+        }
+        return EntityStore.super.countSemanticsOfPattern(patternNid);
+    }
+
+    @Override
+    public long[] semanticNidsOfPattern(long patternNid, int offset, int limit) {
+        dev.ikm.tinkar.schema.PublicId pattern = schemaIdOf(patternNid);
+        if (pattern == null || !GrpcSearchClient.isAvailable()) {
+            return EntityStore.super.semanticNidsOfPattern(patternNid, offset, limit);
+        }
+        return membersFromServer(patternNid, pattern, offset, limit, null);
+    }
+
+    @Override
+    public java.util.Optional<long[]> semanticNidsOfPatternMatching(long patternNid, String text, int limit) {
+        dev.ikm.tinkar.schema.PublicId pattern = schemaIdOf(patternNid);
+        if (pattern == null || !GrpcSearchClient.isAvailable()) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(membersFromServer(patternNid, pattern, 0, limit, text));
+    }
+
+    /**
+     * Reads up to {@code limit} of a pattern's members from the server, a call per
+     * {@value #MEMBERS_PER_CALL}, storing what each page brings: the members, their stamps, and
+     * their referenced components with descriptions, so they display without a call per row.
+     */
+    private long[] membersFromServer(long patternNid, dev.ikm.tinkar.schema.PublicId pattern,
+                                     int offset, int limit, String text) {
+        org.eclipse.collections.api.list.primitive.MutableLongList nids =
+                org.eclipse.collections.impl.factory.primitive.LongLists.mutable.empty();
+        int next = Math.max(0, offset);
+        try {
+            while (nids.size() < limit) {
+                int want = Math.min(MEMBERS_PER_CALL, limit - nids.size());
+                var response = GrpcSearchClient.get().listPatternMembers(pattern, next, want, text);
+                if (!response.getSuccess()) {
+                    LOG.warn("Could not list the members of pattern nid {}: {}", patternNid, response.getErrorMessage());
+                    break;
+                }
+                store(response.getEntitiesList());
+                for (dev.ikm.tinkar.schema.PublicId member : response.getMemberIdsList()) {
+                    nids.add(nidForUuids(SchemaIds.toPublicId(member).asUuidArray()));
+                }
+                next += response.getMemberIdsCount();
+                if (!response.getHasMore() || response.getMemberIdsCount() == 0) {
+                    break;
+                }
+            }
+        } catch (RuntimeException e) {
+            LOG.warn("Could not list the members of pattern nid {}: {}", patternNid, e.getMessage());
+        }
+        return nids.toArray();
+    }
+
+    /** The public id this store knows {@code nid} by, as the schema writes it, or null if none. */
+    private dev.ikm.tinkar.schema.PublicId schemaIdOf(long nid) {
+        List<UUID> uuids = nidToUuidsMap.get(Nid.narrowChecked(nid));
+        return uuids == null || uuids.isEmpty() ? null : SchemaIds.toSchema(uuids.toArray(UUID[]::new));
     }
 
     @Override
