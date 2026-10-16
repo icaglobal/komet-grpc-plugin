@@ -294,12 +294,24 @@ public class GrpcSearchClient implements AutoCloseable {
      * @param text    optional: only members whose referenced component's description contains this
      */
     public ListPatternMembersResponse listPatternMembers(PublicId pattern, int offset, int limit, String text) {
+        return listPatternMembers(pattern, offset, limit, text, null);
+    }
+
+    /**
+     * As {@link #listPatternMembers(PublicId, int, int, String)}, optionally only the members that
+     * refer to {@code referencedComponent}.
+     */
+    public ListPatternMembersResponse listPatternMembers(PublicId pattern, int offset, int limit, String text,
+                                                        PublicId referencedComponent) {
         ListPatternMembersRequest.Builder request = ListPatternMembersRequest.newBuilder()
                 .setPatternId(pattern)
                 .setOffset(offset)
                 .setLimit(limit);
         if (text != null && !text.isBlank()) {
             request.setReferencedComponentText(text);
+        }
+        if (referencedComponent != null) {
+            request.setReferencedComponentId(referencedComponent);
         }
         return knowledgeGraphStub.listPatternMembers(request.build());
     }
