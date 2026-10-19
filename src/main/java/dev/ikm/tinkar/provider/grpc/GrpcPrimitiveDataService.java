@@ -508,6 +508,9 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
     /** Whether every pattern of the server's store has been loaded here. */
     private volatile boolean patternsListed;
 
+    /** The patterns the server listed; any other pattern held here was made here, a window's say. */
+    private final ConcurrentHashSet<Integer> serverPatternNids = new ConcurrentHashSet<>();
+
     /**
      * Loads every pattern of the server's store, once: this store holds only what it has fetched,
      * so listing patterns from it alone shows a handful. Reset by {@link #refreshFromServer}, after
@@ -525,6 +528,12 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
                 var response = GrpcSearchClient.get().listPatterns();
                 if (response.getSuccess()) {
                     store(response.getEntitiesList());
+                    for (dev.ikm.tinkar.schema.TinkarMsg msg : response.getEntitiesList()) {
+                        if (msg.hasPatternChronology()) {
+                            serverPatternNids.add(Nid.narrowChecked(nidForUuids(
+                                    SchemaIds.toPublicId(msg.getPatternChronology().getPublicId()).asUuidArray())));
+                        }
+                    }
                     patternsListed = true;
                     LOG.info("Loaded {} patterns from the server", response.getPatternCount());
                 } else {
@@ -539,10 +548,25 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
     /** Most members one ListPatternMembers call returns; larger pages take several calls. */
     private static final int MEMBERS_PER_CALL = 1000;
 
+    /**
+     * The public id to ask the server for a pattern's members by, or null when the server does
+     * not hold the pattern: one made here, whose members are only here.
+     */
+    private dev.ikm.tinkar.schema.PublicId serverPatternId(long patternNid) {
+        if (!GrpcSearchClient.isAvailable()) {
+            return null;
+        }
+        listPatternsFromServer();
+        if (patternsListed && !serverPatternNids.contains(Nid.narrowChecked(patternNid))) {
+            return null;
+        }
+        return schemaIdOf(patternNid);
+    }
+
     @Override
     public int countSemanticsOfPattern(long patternNid) {
-        dev.ikm.tinkar.schema.PublicId pattern = schemaIdOf(patternNid);
-        if (pattern == null || !GrpcSearchClient.isAvailable()) {
+        dev.ikm.tinkar.schema.PublicId pattern = serverPatternId(patternNid);
+        if (pattern == null) {
             return EntityStore.super.countSemanticsOfPattern(patternNid);
         }
         try {
@@ -560,8 +584,8 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
 
     @Override
     public long[] semanticNidsOfPattern(long patternNid, int offset, int limit) {
-        dev.ikm.tinkar.schema.PublicId pattern = schemaIdOf(patternNid);
-        if (pattern == null || !GrpcSearchClient.isAvailable()) {
+        dev.ikm.tinkar.schema.PublicId pattern = serverPatternId(patternNid);
+        if (pattern == null) {
             return EntityStore.super.semanticNidsOfPattern(patternNid, offset, limit);
         }
         return membersFromServer(patternNid, pattern, offset, limit, null);
@@ -691,7 +715,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
                 || !membersAsked.add(IntsInLong.ints2Long(component, Nid.narrowChecked(patternNid)))) {
             return false;
         }
-        dev.ikm.tinkar.schema.PublicId pattern = schemaIdOf(patternNid);
+        dev.ikm.tinkar.schema.PublicId pattern = serverPatternId(patternNid);
         dev.ikm.tinkar.schema.PublicId componentId = schemaIdOf(component);
         if (pattern == null || componentId == null) {
             return false;
