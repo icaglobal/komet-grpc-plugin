@@ -572,12 +572,13 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
      */
     private long[] membersFromServer(long patternNid, dev.ikm.tinkar.schema.PublicId pattern,
                                      int offset, int limit, String text) {
-        org.eclipse.collections.api.list.primitive.MutableLongList nids =
-                org.eclipse.collections.impl.factory.primitive.LongLists.mutable.empty();
+        // The JDK's builder: this module reads Eclipse Collections' API, not its implementation.
+        java.util.stream.LongStream.Builder nids = java.util.stream.LongStream.builder();
+        int found = 0;
         int next = Math.max(0, offset);
         try {
-            while (nids.size() < limit) {
-                int want = Math.min(MEMBERS_PER_CALL, limit - nids.size());
+            while (found < limit) {
+                int want = Math.min(MEMBERS_PER_CALL, limit - found);
                 var response = GrpcSearchClient.get().listPatternMembers(pattern, next, want, text);
                 if (!response.getSuccess()) {
                     LOG.warn("Could not list the members of pattern nid {}: {}", patternNid, response.getErrorMessage());
@@ -586,6 +587,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
                 store(response.getEntitiesList());
                 for (dev.ikm.tinkar.schema.PublicId member : response.getMemberIdsList()) {
                     nids.add(nidForUuids(SchemaIds.toPublicId(member).asUuidArray()));
+                    found++;
                 }
                 next += response.getMemberIdsCount();
                 if (!response.getHasMore() || response.getMemberIdsCount() == 0) {
@@ -595,7 +597,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
         } catch (RuntimeException e) {
             LOG.warn("Could not list the members of pattern nid {}: {}", patternNid, e.getMessage());
         }
-        return nids.toArray();
+        return nids.build().toArray();
     }
 
     /** The public id this store knows {@code nid} by, as the schema writes it, or null if none. */
