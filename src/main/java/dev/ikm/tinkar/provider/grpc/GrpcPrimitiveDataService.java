@@ -241,6 +241,9 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
         if (!GrpcSearchClient.isAvailable()) {
             return 0;
         }
+        // An import may have brought new patterns and members: ask again when next needed.
+        patternsListed = false;
+        membersAsked.clear();
         TinkarSchemaToEntityTransformer transformer = TinkarSchemaToEntityTransformer.getInstance();
         int refreshed = 0;
         for (List<UUID> uuids : components) {
@@ -350,11 +353,18 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
             return false;
         }
 
-        // Store bytes directly into nidComponentMap via merge() to avoid a Caffeine
-        // re-entrance issue: calling EntityService.putEntity() from within a Caffeine
-        // get(key, loader) for the same key may silently drop the put.
+        store(response.getEntitiesList());
+        return true;
+    }
+
+    /**
+     * Stores entities the server sent. Bytes go straight into nidComponentMap via merge() to avoid
+     * a Caffeine re-entrance issue: calling EntityService.putEntity() from within a Caffeine
+     * get(key, loader) for the same key may silently drop the put.
+     */
+    private void store(List<dev.ikm.tinkar.schema.TinkarMsg> messages) {
         TinkarSchemaToEntityTransformer transformer = TinkarSchemaToEntityTransformer.getInstance();
-        for (dev.ikm.tinkar.schema.TinkarMsg msg : response.getEntitiesList()) {
+        for (dev.ikm.tinkar.schema.TinkarMsg msg : messages) {
             transformer.transform(msg,
                     entity -> merge(entity.nid(),
                             entity instanceof SemanticEntity<?> se ? se.patternNid() : Integer.MAX_VALUE,
@@ -363,7 +373,6 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
                     stamp  -> merge(stamp.nid(), Integer.MAX_VALUE, Integer.MAX_VALUE,
                             stamp.getBytes(), stamp, DataActivity.SYNCHRONIZABLE_EDIT));
         }
-        return true;
     }
 
     /**
@@ -439,14 +448,41 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
 
     @Override
     public PrimitiveDataSearchResult[] search(String query, int maxResultSize) {
-        throw new UnsupportedOperationException(
-                "Local search is not available in gRPC mode — use GrpcSearchService");
+        // This store has no index of its own: the server searches, and each matching semantic is
+        // returned by nid, its entity fetched from the server when it is first read.
+        if (!GrpcSearchClient.isAvailable() || query == null || query.isBlank()) {
+            return new PrimitiveDataSearchResult[0];
+        }
+        var response = GrpcSearchClient.get().conceptSearchWithSort(query, maxResultSize,
+                dev.ikm.tinkar.service.proto.SearchSortOption.TOP_COMPONENT);
+        java.util.List<PrimitiveDataSearchResult> results = new java.util.ArrayList<>();
+        for (var group : response.getGroupedResultsList()) {
+            for (var match : group.getMatchingSemanticsList()) {
+                if (!SchemaIds.hasUuids(match.getPublicId())) {
+                    continue;
+                }
+                long nid = nidForUuids(SchemaIds.uuids(match.getPublicId()));
+                results.add(new PrimitiveDataSearchResult(nid, match.getFieldIndex(), match.getScore(),
+                        match.getHighlightedText()));
+            }
+        }
+        return results.toArray(PrimitiveDataSearchResult[]::new);
     }
 
     @Override
     public String highlight(String query, String text) {
-        throw new UnsupportedOperationException(
-                "Local highlight is not available in gRPC mode — use GrpcSearchService");
+        // The server's highlighting is not available for arbitrary text; bold each query word here.
+        if (query == null || query.isBlank() || text == null) {
+            return text;
+        }
+        String highlighted = text;
+        for (String word : query.strip().split("\\s+")) {
+            String term = word.replaceAll("[^\\p{L}\\p{N}]", "");
+            if (!term.isEmpty()) {
+                highlighted = highlighted.replaceAll("(?i)(" + java.util.regex.Pattern.quote(term) + ")", "<B>$1</B>");
+            }
+        }
+        return highlighted;
     }
 
     @Override
@@ -465,7 +501,135 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
 
     @Override
     public void forEachPatternNid(LongProcedure procedure) {
+        listPatternsFromServer();
         patternNids.forEach(procedure::accept);
+    }
+
+    /** Whether every pattern of the server's store has been loaded here. */
+    private volatile boolean patternsListed;
+
+    /** The patterns the server listed; any other pattern held here was made here, a window's say. */
+    private final ConcurrentHashSet<Integer> serverPatternNids = new ConcurrentHashSet<>();
+
+    /**
+     * Loads every pattern of the server's store, once: this store holds only what it has fetched,
+     * so listing patterns from it alone shows a handful. Reset by {@link #refreshFromServer}, after
+     * an import may have added patterns.
+     */
+    private void listPatternsFromServer() {
+        if (patternsListed || !GrpcSearchClient.isAvailable()) {
+            return;
+        }
+        synchronized (this) {
+            if (patternsListed) {
+                return;
+            }
+            try {
+                var response = GrpcSearchClient.get().listPatterns();
+                if (response.getSuccess()) {
+                    store(response.getEntitiesList());
+                    for (dev.ikm.tinkar.schema.TinkarMsg msg : response.getEntitiesList()) {
+                        if (msg.hasPatternChronology()) {
+                            serverPatternNids.add(Nid.narrowChecked(nidForUuids(
+                                    SchemaIds.toPublicId(msg.getPatternChronology().getPublicId()).asUuidArray())));
+                        }
+                    }
+                    patternsListed = true;
+                    LOG.info("Loaded {} patterns from the server", response.getPatternCount());
+                } else {
+                    LOG.warn("Could not list the server's patterns: {}", response.getErrorMessage());
+                }
+            } catch (RuntimeException e) {
+                LOG.warn("Could not list the server's patterns: {}", e.getMessage());
+            }
+        }
+    }
+
+    /** Most members one ListPatternMembers call returns; larger pages take several calls. */
+    private static final int MEMBERS_PER_CALL = 1000;
+
+    /**
+     * The public id to ask the server for a pattern's members by, or null when the server does
+     * not hold the pattern: one made here, whose members are only here.
+     */
+    private dev.ikm.tinkar.schema.PublicId serverPatternId(long patternNid) {
+        if (!GrpcSearchClient.isAvailable()) {
+            return null;
+        }
+        listPatternsFromServer();
+        if (patternsListed && !serverPatternNids.contains(Nid.narrowChecked(patternNid))) {
+            return null;
+        }
+        return schemaIdOf(patternNid);
+    }
+
+    @Override
+    public int countSemanticsOfPattern(long patternNid) {
+        dev.ikm.tinkar.schema.PublicId pattern = serverPatternId(patternNid);
+        if (pattern == null) {
+            return EntityStore.super.countSemanticsOfPattern(patternNid);
+        }
+        try {
+            var response = GrpcSearchClient.get().listPatternMembers(pattern, 0, 1, null);
+            if (response.getSuccess()) {
+                store(response.getEntitiesList());
+                return (int) Math.min(Integer.MAX_VALUE, response.getTotalCount());
+            }
+            LOG.warn("Could not count the members of pattern nid {}: {}", patternNid, response.getErrorMessage());
+        } catch (RuntimeException e) {
+            LOG.warn("Could not count the members of pattern nid {}: {}", patternNid, e.getMessage());
+        }
+        return EntityStore.super.countSemanticsOfPattern(patternNid);
+    }
+
+    @Override
+    public long[] semanticNidsOfPattern(long patternNid, int offset, int limit) {
+        dev.ikm.tinkar.schema.PublicId pattern = serverPatternId(patternNid);
+        if (pattern == null) {
+            return EntityStore.super.semanticNidsOfPattern(patternNid, offset, limit);
+        }
+        return membersFromServer(patternNid, pattern, offset, limit, null);
+    }
+
+    /**
+     * Reads up to {@code limit} of a pattern's members from the server, a call per
+     * {@value #MEMBERS_PER_CALL}, storing what each page brings: the members, their stamps, and
+     * their referenced components with descriptions, so they display without a call per row.
+     */
+    private long[] membersFromServer(long patternNid, dev.ikm.tinkar.schema.PublicId pattern,
+                                     int offset, int limit, String text) {
+        // The JDK's builder: this module reads Eclipse Collections' API, not its implementation.
+        java.util.stream.LongStream.Builder nids = java.util.stream.LongStream.builder();
+        int found = 0;
+        int next = Math.max(0, offset);
+        try {
+            while (found < limit) {
+                int want = Math.min(MEMBERS_PER_CALL, limit - found);
+                var response = GrpcSearchClient.get().listPatternMembers(pattern, next, want, text);
+                if (!response.getSuccess()) {
+                    LOG.warn("Could not list the members of pattern nid {}: {}", patternNid, response.getErrorMessage());
+                    break;
+                }
+                store(response.getEntitiesList());
+                for (dev.ikm.tinkar.schema.PublicId member : response.getMemberIdsList()) {
+                    nids.add(nidForUuids(SchemaIds.toPublicId(member).asUuidArray()));
+                    found++;
+                }
+                next += response.getMemberIdsCount();
+                if (!response.getHasMore() || response.getMemberIdsCount() == 0) {
+                    break;
+                }
+            }
+        } catch (RuntimeException e) {
+            LOG.warn("Could not list the members of pattern nid {}: {}", patternNid, e.getMessage());
+        }
+        return nids.build().toArray();
+    }
+
+    /** The public id this store knows {@code nid} by, as the schema writes it, or null if none. */
+    private dev.ikm.tinkar.schema.PublicId schemaIdOf(long nid) {
+        List<UUID> uuids = nidToUuidsMap.get(Nid.narrowChecked(nid));
+        return uuids == null || uuids.isEmpty() ? null : SchemaIds.toSchema(uuids.toArray(UUID[]::new));
     }
 
     @Override
@@ -497,17 +661,75 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
     @Override
     public void forEachSemanticNidForComponentOfPattern(long componentNid, long patternNid,
                                                         LongProcedure procedure) {
-        fetchSemanticsIfUnseen(Nid.narrowChecked(componentNid));
-        long[] citationLongs = nidToCitingComponentsNidMap.get(Nid.narrowChecked(componentNid));
+        int component = Nid.narrowChecked(componentNid);
+        fetchSemanticsIfUnseen(component);
+        if (!citesOfPattern(component, patternNid, procedure)
+                && fetchMembersForComponentIfUnseen(component, patternNid)) {
+            citesOfPattern(component, patternNid, procedure);
+        }
+    }
+
+    /** Gives {@code procedure} the semantics of the pattern held here that cite the component; whether any did. */
+    private boolean citesOfPattern(int component, long patternNid, LongProcedure procedure) {
+        long[] citationLongs = nidToCitingComponentsNidMap.get(component);
+        boolean found = false;
         if (citationLongs != null) {
             for (long citationLong : citationLongs) {
                 int citingNid        = (int) (citationLong >> 32);
                 int citingPatternNid = (int)  citationLong;
                 if (patternNid == citingPatternNid) {
                     procedure.accept(citingNid);
+                    found = true;
                 }
             }
         }
+        return found;
+    }
+
+    /** Components whose every semantic has been loaded here, by {@link GrpcSearchService#loadConceptWithSemantics}. */
+    private final ConcurrentHashSet<Integer> semanticsComplete = new ConcurrentHashSet<>();
+
+    /** Component and pattern pairs whose members have been asked of the server, as one long each. */
+    private final ConcurrentHashSet<Long> membersAsked = new ConcurrentHashSet<>();
+
+    /**
+     * Records that every semantic of a component is now held here, so a pattern it has no member
+     * of is not asked of the server again.
+     */
+    public void markSemanticsComplete(long nid) {
+        semanticsComplete.add(Nid.narrowChecked(nid));
+    }
+
+    /**
+     * Asks the server, once, for a component's members of a pattern this store holds none of — a
+     * concept fetched with its names alone, say, whose membership in a pattern is then looked up.
+     * Not asked for a semantic or stamp: those are looked up for every displayed description (its
+     * dialects, for one), and would each become a call. Nor for a component whose every semantic was
+     * loaded: holding none of the pattern means it has none.
+     *
+     * @return whether the server sent any
+     */
+    private boolean fetchMembersForComponentIfUnseen(int component, long patternNid) {
+        if (semanticsComplete.contains(component) || semanticNids.contains(component)
+                || stampNids.contains(component) || !GrpcSearchClient.isAvailable()
+                || !membersAsked.add(IntsInLong.ints2Long(component, Nid.narrowChecked(patternNid)))) {
+            return false;
+        }
+        dev.ikm.tinkar.schema.PublicId pattern = serverPatternId(patternNid);
+        dev.ikm.tinkar.schema.PublicId componentId = schemaIdOf(component);
+        if (pattern == null || componentId == null) {
+            return false;
+        }
+        try {
+            var response = GrpcSearchClient.get().listPatternMembers(pattern, 0, MEMBERS_PER_CALL, null, componentId);
+            if (response.getSuccess() && response.getMemberIdsCount() > 0) {
+                store(response.getEntitiesList());
+                return true;
+            }
+        } catch (RuntimeException e) {
+            LOG.warn("Could not fetch the members of pattern nid {} for nid {}: {}", patternNid, component, e.getMessage());
+        }
+        return false;
     }
 
     @Override

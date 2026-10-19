@@ -189,7 +189,12 @@ public class GrpcSearchService implements SearchService, RemoteConceptSearchServ
                     entity -> EntityService.get().putEntity(entity),
                     stamp  -> EntityService.get().putEntity(stamp));
         }
-        return EntityService.get().nidForUuids(publicIds.toArray(new UUID[0]));
+        long nid = EntityService.get().nidForUuids(publicIds.toArray(new UUID[0]));
+        // Every semantic of the concept came with it: a pattern it has none of need not be asked.
+        if (dev.ikm.tinkar.common.service.PrimitiveData.get() instanceof GrpcPrimitiveDataService store) {
+            store.markSemanticsComplete(nid);
+        }
+        return nid;
     }
 
     /**
