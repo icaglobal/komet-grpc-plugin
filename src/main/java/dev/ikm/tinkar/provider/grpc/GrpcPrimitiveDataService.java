@@ -264,10 +264,12 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
                 if (!response.getSuccess()) {
                     continue;
                 }
+                // A server says nothing of how its vertex identities were minted, so they are
+                // correlated as they arrive, not kept (IKE-Network/ike-issues#1310).
                 for (dev.ikm.tinkar.schema.TinkarMsg msg : response.getEntitiesList()) {
                     transformer.transform(msg,
-                            entity -> EntityService.get().putEntity(entity, DataActivity.LOADING_CHANGE_SET),
-                            stamp -> EntityService.get().putEntity(stamp, DataActivity.LOADING_CHANGE_SET));
+                            entity -> EntityService.get().putEntity(entity, DataActivity.LOADING_UNDERIVED_CHANGE_SET),
+                            stamp -> EntityService.get().putEntity(stamp, DataActivity.LOADING_UNDERIVED_CHANGE_SET));
                 }
                 refreshed++;
             } catch (RuntimeException e) {
