@@ -22,6 +22,8 @@ import dev.ikm.tinkar.common.util.broadcast.CommitBroadcaster;
 import dev.ikm.tinkar.entity.Entity;
 import dev.ikm.tinkar.entity.EntityHandle;
 import dev.ikm.tinkar.entity.EntityService;
+import dev.ikm.tinkar.entity.PatternEntity;
+import dev.ikm.tinkar.entity.SemanticEntity;
 import dev.ikm.tinkar.entity.StampEntity;
 import dev.ikm.tinkar.entity.transform.EntityToTinkarSchemaTransformer;
 import dev.ikm.tinkar.schema.TinkarMsg;
@@ -30,6 +32,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -88,6 +91,16 @@ public class GrpcCommitForwarder implements ServiceLifecycle {
 
     private final Consumer<CommitBroadcaster.CommitNotification> listener = this::forward;
 
+    /**
+     * Whether a semantic of the pattern goes to the server: its pattern is on the server, or is
+     * sent in the same commit. A semantic of a pattern the server does not hold would arrive there
+     * without its pattern, as the pattern-definition semantics once did.
+     */
+    private static boolean sendable(long patternNid, Set<Long> patternsInCommit) {
+        return patternsInCommit.contains(patternNid)
+                || GrpcPrimitiveDataService.provider().serverHoldsPattern(patternNid);
+    }
+
     @Override
     public void startup() {
         CommitBroadcaster.subscribe(listener);
@@ -134,15 +147,39 @@ public class GrpcCommitForwarder implements ServiceLifecycle {
                     messages.add(transformer.transform(stamp));
                 }
             }
+            List<Entity<?>> entities = new ArrayList<>();
+            Set<Long> patternsInCommit = new HashSet<>();
+            int left = 0;
             for (long componentNid : notification.componentNids()) {
                 Entity<?> entity = EntityHandle.get(componentNid).orNull();
-                if (entity != null) {
-                    messages.add(transformer.transform(entity));
+                if (entity == null) {
+                    continue;
                 }
+                if (ClientLocalScaffolding.contains(entity)) {
+                    left++;
+                    continue;
+                }
+                if (entity instanceof PatternEntity<?>) {
+                    patternsInCommit.add(entity.nid());
+                }
+                entities.add(entity);
+            }
+            int entityMessages = 0;
+            for (Entity<?> entity : entities) {
+                if (entity instanceof SemanticEntity<?> semantic && !sendable(semantic.patternNid(), patternsInCommit)) {
+                    left++;
+                    continue;
+                }
+                messages.add(transformer.transform(entity));
+                entityMessages++;
+            }
+            if (left > 0) {
+                LOG.debug("Commit {}: left out {} component(s): Komet's own scaffolding, or semantics of patterns the server does not hold",
+                        notification.transactionUuid(), left);
             }
 
-            if (messages.isEmpty()) {
-                LOG.debug("Commit {} had no resolvable entities to send", notification.transactionUuid());
+            if (entityMessages == 0) {
+                LOG.debug("Commit {} had no entities to send", notification.transactionUuid());
                 return;
             }
 
@@ -152,6 +189,9 @@ public class GrpcCommitForwarder implements ServiceLifecycle {
 
             CommitEntitiesResponse response = GrpcSearchClient.get().commitEntities(messages, name);
             if (response.getSuccess()) {
+                // Patterns sent are the server's now; their semantics travel from here on.
+                GrpcPrimitiveDataService store = GrpcPrimitiveDataService.provider();
+                patternsInCommit.forEach(store::serverNowHolds);
                 LOG.info("Committed {} entities to the remote store ({})",
                         response.getEntitiesCommitted(), name);
             } else {
