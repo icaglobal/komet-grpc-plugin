@@ -25,6 +25,7 @@ import dev.ikm.tinkar.common.service.SequentialNids;
 import dev.ikm.tinkar.entity.changeset.SchemaIds;
 import dev.ikm.tinkar.common.service.internal.EntityStore;
 import dev.ikm.tinkar.common.id.PublicId;
+import dev.ikm.tinkar.common.id.PublicIds;
 import dev.ikm.tinkar.common.id.impl.NidLayout;
 import dev.ikm.tinkar.common.service.DataActivity;
 import dev.ikm.tinkar.common.service.DataServiceController;
@@ -143,6 +144,23 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
     @Override
     public void close() {
         singleton = null;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Every nid this store mints is minted from UUIDs, which it keeps, so a component cited here
+     * but never loaded (a stamp an entity refers to, say) still has its public id.
+     *
+     * @throws IllegalStateException when no UUIDs were ever given this nid
+     */
+    @Override
+    public PublicId publicIdForNid(long nid) {
+        List<UUID> uuids = nidToUuidsMap.get(Nid.narrowChecked(nid));
+        if (uuids == null || uuids.isEmpty()) {
+            throw new IllegalStateException("No public id is known for nid " + nid);
+        }
+        return PublicIds.of(uuids.toArray(UUID[]::new));
     }
 
     @Override
@@ -269,7 +287,11 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
                 }
                 // A server says nothing of how its vertex identities were minted, so they are
                 // correlated as they arrive, not kept (IKE-Network/ike-issues#1310).
+                java.util.Map<UUID, UUID[]> refersTo = refersTo(response.getEntitiesList());
                 for (dev.ikm.tinkar.schema.TinkarMsg msg : response.getEntitiesList()) {
+                    if (notTheServersToGive(msg, refersTo)) {
+                        continue;
+                    }
                     transformer.transform(msg,
                             entity -> EntityService.get().putEntity(entity, DataActivity.LOADING_UNDERIVED_CHANGE_SET),
                             stamp -> EntityService.get().putEntity(stamp, DataActivity.LOADING_UNDERIVED_CHANGE_SET));
@@ -363,8 +385,23 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
      * get(key, loader) for the same key may silently drop the put.
      */
     private void store(List<dev.ikm.tinkar.schema.TinkarMsg> messages) {
+        store(messages, true);
+    }
+
+    /**
+     * Stores entities the server sent.
+     *
+     * @param onlyOfServerPatterns whether to leave out what is not the server's to give (see
+     *                             {@link #notTheServersToGive}); false for the pattern listing
+     *                             itself, which is what that check reads
+     */
+    private void store(List<dev.ikm.tinkar.schema.TinkarMsg> messages, boolean onlyOfServerPatterns) {
         TinkarSchemaToEntityTransformer transformer = TinkarSchemaToEntityTransformer.getInstance();
+        java.util.Map<UUID, UUID[]> refersTo = onlyOfServerPatterns ? refersTo(messages) : java.util.Map.of();
         for (dev.ikm.tinkar.schema.TinkarMsg msg : messages) {
+            if (onlyOfServerPatterns && notTheServersToGive(msg, refersTo)) {
+                continue;
+            }
             transformer.transform(msg,
                     entity -> merge(entity.nid(),
                             entity instanceof SemanticEntity<?> se ? se.patternNid() : Integer.MAX_VALUE,
@@ -527,7 +564,7 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
             try {
                 var response = GrpcSearchClient.get().listPatterns();
                 if (response.getSuccess()) {
-                    store(response.getEntitiesList());
+                    store(response.getEntitiesList(), false);
                     for (dev.ikm.tinkar.schema.TinkarMsg msg : response.getEntitiesList()) {
                         if (msg.hasPatternChronology()) {
                             serverPatternNids.add(Nid.narrowChecked(nidForUuids(
@@ -561,6 +598,148 @@ public class GrpcPrimitiveDataService implements PrimitiveDataService, EntitySto
             return null;
         }
         return schemaIdOf(patternNid);
+    }
+
+    /**
+     * Whether the server holds a pattern: it listed it, or this session sent it there. True when the
+     * server's patterns could not be listed, since then it cannot be told.
+     *
+     * @param patternNid the pattern
+     */
+    public boolean serverHoldsPattern(long patternNid) {
+        listPatternsFromServer();
+        return !patternsListed || serverPatternNids.contains(Nid.narrowChecked(patternNid));
+    }
+
+    /**
+     * Records that a pattern sent from this session is on the server now, so its semantics are
+     * exchanged with the server like those of any pattern it listed.
+     *
+     * @param patternNid the pattern sent
+     */
+    public void serverNowHolds(long patternNid) {
+        serverPatternNids.add(Nid.narrowChecked(patternNid));
+    }
+
+    /** Server semantics of a pattern the server does not hold, left out so far: reported once. */
+    private final java.util.concurrent.atomic.AtomicBoolean reportedOrphans = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /** For each semantic in a batch from the server, the UUIDs of what it refers to. */
+    private static java.util.Map<UUID, UUID[]> refersTo(List<dev.ikm.tinkar.schema.TinkarMsg> messages) {
+        java.util.Map<UUID, UUID[]> refersTo = new java.util.HashMap<>();
+        for (dev.ikm.tinkar.schema.TinkarMsg msg : messages) {
+            if (msg.hasSemanticChronology()) {
+                var semantic = msg.getSemanticChronology();
+                UUID[] referenced = SchemaIds.toPublicId(semantic.getReferencedComponentPublicId()).asUuidArray();
+                for (UUID uuid : SchemaIds.toPublicId(semantic.getPublicId()).asUuidArray()) {
+                    refersTo.put(uuid, referenced);
+                }
+            }
+        }
+        return refersTo;
+    }
+
+    /**
+     * Whether a message the server sent is not the server's to give: Komet's own scaffolding (see
+     * {@link ClientLocalScaffolding}), which the session seeds for itself, or a semantic of a
+     * pattern the server does not hold (see {@link #ofPatternServerLacks}).
+     *
+     * @param refersTo what each semantic of the same batch refers to, so a dialect of a name of
+     *                 a scaffolding concept is known as scaffolding before either is stored
+     */
+    private boolean notTheServersToGive(dev.ikm.tinkar.schema.TinkarMsg msg, java.util.Map<UUID, UUID[]> refersTo) {
+        UUID[] own = null;
+        if (msg.hasConceptChronology()) {
+            own = SchemaIds.toPublicId(msg.getConceptChronology().getPublicId()).asUuidArray();
+        } else if (msg.hasPatternChronology()) {
+            own = SchemaIds.toPublicId(msg.getPatternChronology().getPublicId()).asUuidArray();
+        } else if (msg.hasSemanticChronology()) {
+            var semantic = msg.getSemanticChronology();
+            own = SchemaIds.toPublicId(semantic.getPublicId()).asUuidArray();
+            if (ClientLocalScaffolding.isPattern(SchemaIds.toPublicId(semantic.getPatternForSemanticPublicId()).asUuidArray())
+                    || refersToScaffolding(SchemaIds.toPublicId(semantic.getReferencedComponentPublicId()).asUuidArray(),
+                    refersTo, 0)) {
+                return leaveOut();
+            }
+        }
+        if (own != null && ClientLocalScaffolding.isIdentity(own)) {
+            return leaveOut();
+        }
+        return ofPatternServerLacks(msg);
+    }
+
+    /** Whether a component, or what it refers to, is Komet's scaffolding: followed through the batch, then this store. */
+    private boolean refersToScaffolding(UUID[] component, java.util.Map<UUID, UUID[]> refersTo, int depth) {
+        if (depth > 3) {
+            return false;
+        }
+        if (ClientLocalScaffolding.isIdentity(component)) {
+            return true;
+        }
+        for (UUID uuid : component) {
+            UUID[] next = refersTo.get(uuid);
+            if (next != null) {
+                return refersToScaffolding(next, refersTo, depth + 1);
+            }
+            // Read from this store's bytes, not through the entity cache: this runs while the
+            // store may be loading an entity for that cache.
+            Integer nid = uuidNidMap.get(uuid);
+            byte[] bytes = nid == null ? null : nidComponentMap.get(nid);
+            if (bytes != null && EntityRecordFactory.make(bytes) instanceof SemanticEntity<?> held) {
+                List<UUID> pattern = nidToUuidsMap.get(Nid.narrowChecked(held.patternNid()));
+                if (pattern != null && ClientLocalScaffolding.isPattern(pattern.toArray(UUID[]::new))) {
+                    return true;
+                }
+                List<UUID> referenced = nidToUuidsMap.get(Nid.narrowChecked(held.referencedComponentNid()));
+                return referenced != null
+                        && refersToScaffolding(referenced.toArray(UUID[]::new), refersTo, depth + 1);
+            }
+            if (bytes != null) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /** Server copies of Komet's scaffolding, left out so far: reported once. */
+    private final java.util.concurrent.atomic.AtomicBoolean reportedScaffolding = new java.util.concurrent.atomic.AtomicBoolean();
+
+    private boolean leaveOut() {
+        if (reportedScaffolding.compareAndSet(false, true)) {
+            LOG.info("Leaving out the server's copies of Komet's own pattern-definition scaffolding: this session "
+                    + "seeds its own, and an earlier session sent those");
+        }
+        return true;
+    }
+
+    /**
+     * Whether a message the server sent is a semantic of a pattern the server does not hold.
+     *
+     * <p>Such a semantic is not the server's to give: its pattern is one Komet made for itself (the
+     * pattern-definition patterns its KL windows seed into every session) and an earlier session
+     * sent the semantic without it. Taken in, it would sit beside this session's own copy, carrying
+     * versions whose stamps this session never loaded. Left out, the session keeps its own.
+     */
+    private boolean ofPatternServerLacks(dev.ikm.tinkar.schema.TinkarMsg msg) {
+        if (!msg.hasSemanticChronology() || !GrpcSearchClient.isAvailable()) {
+            return false;
+        }
+        listPatternsFromServer();
+        if (!patternsListed) {
+            return false;
+        }
+        for (UUID uuid : SchemaIds.toPublicId(msg.getSemanticChronology().getPatternForSemanticPublicId()).asUuidArray()) {
+            Integer nid = uuidNidMap.get(uuid);
+            if (nid != null && serverPatternNids.contains(nid)) {
+                return false;
+            }
+        }
+        if (reportedOrphans.compareAndSet(false, true)) {
+            LOG.info("Leaving out the server's semantics of patterns it does not hold, such as {}: they were "
+                    + "sent from an earlier Komet session without their pattern", SchemaIds.toPublicId(
+                    msg.getSemanticChronology().getPatternForSemanticPublicId()));
+        }
+        return true;
     }
 
     @Override
